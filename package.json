@@ -1,0 +1,19 @@
+{
+  "name": "arkiv-transaction-decoder",
+  "version": "0.1.0",
+  "description": "Bun server that decodes Arkiv entity-registry transaction data into Arkiv operations",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "^2.38.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.6.0"
+  }
+}
