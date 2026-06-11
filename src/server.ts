@@ -1,9 +1,12 @@
 import { DecodeError, decodeArkivTransaction } from "./decoder"
+import { SERVICE_NAME, SERVICE_VERSION } from "./version"
 
 const USAGE = {
-  service: "arkiv-transaction-decoder",
+  service: SERVICE_NAME,
+  version: SERVICE_VERSION,
   endpoints: {
     "GET /api/health": "liveness check",
+    "GET /api/version": "service version",
     "POST /api/decode": 'body: {"data": "0x..."} (execute() calldata or serialized tx), or raw hex as text/plain',
     "GET /api/decode?data=0x...": "same as POST, via query parameter",
   },
@@ -48,6 +51,10 @@ export async function handleRequest(req: Request): Promise<Response> {
 
   if (url.pathname === "/api/health" && req.method === "GET") {
     return json({ status: "ok" })
+  }
+
+  if (url.pathname === "/api/version" && req.method === "GET") {
+    return json({ service: SERVICE_NAME, version: SERVICE_VERSION })
   }
 
   if (url.pathname === "/api/decode") {

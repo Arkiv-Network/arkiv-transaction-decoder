@@ -17,12 +17,23 @@ describe("server", () => {
     const { status, body } = await call("/")
     expect(status).toBe(200)
     expect(body.service).toBe("arkiv-transaction-decoder")
+    expect(body.version).toBe("v0.1.0")
+    expect(body.endpoints["GET /api/version"]).toBe("service version")
   })
 
   test("GET /api/health returns ok", async () => {
     const { status, body } = await call("/api/health")
     expect(status).toBe(200)
     expect(body.status).toBe("ok")
+  })
+
+  test("GET /api/version returns the service version", async () => {
+    const { status, body } = await call("/api/version")
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      service: "arkiv-transaction-decoder",
+      version: "v0.1.0",
+    })
   })
 
   test("POST /api/decode decodes execute calldata from a JSON body", async () => {
