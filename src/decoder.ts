@@ -871,7 +871,7 @@ export function decodeArkivTransaction(input: string, options: DecodeOptions = {
   const direct = decodeBySelector(trimmed, options)
   if (direct) return direct
 
-  // Not raw calldata — try interpreting it as a serialized transaction.
+  // Not raw calldata, so try interpreting it as a serialized transaction.
   let tx
   try {
     tx = parseTransaction(trimmed)
