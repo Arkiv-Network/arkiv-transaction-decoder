@@ -8,7 +8,7 @@ import {
   decodeArkivTransaction,
   decodeCalldata,
 } from "../src/decoder"
-import { createOp, emptyOp, encodeAttribute, encodeExecute } from "./encode"
+import { createOp, emptyOp, encodeAttribute, encodeExecute, rawAttribute } from "./encode"
 
 const ENTITY_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as const
 const OTHER_KEY = "0x2222222222222222222222222222222222222222222222222222222222222222" as const
@@ -121,6 +121,26 @@ describe("decodeCalldata", () => {
     const op = emptyOp(99, ENTITY_KEY)
     const decoded = decodeCalldata(encodeExecute([op])).operations[0]!
     expect(decoded.operation).toBe("unknown(99)")
+  })
+
+  test("renders undecodable attribute values as one valid hex string", () => {
+    const op = createOp({
+      entityKey: ENTITY_KEY,
+      payload: "x",
+      contentType: "text/plain",
+      expiresAtBlocks: 1,
+    })
+    op.attributes = [
+      // 0xff is never valid UTF-8, so the string branch falls back to hex
+      rawAttribute("broken", 2, new Uint8Array([0xff])),
+      rawAttribute("alien", 99, new Uint8Array([0x01])),
+    ]
+
+    const decoded = decodeCalldata(encodeExecute([op])).operations[0]!
+    for (const attr of decoded.attributes) {
+      expect(attr.value).toMatch(/^0x[0-9a-f]{256}$/)
+    }
+    expect(decoded.attributes[1]!.valueTypeName).toBe("unknown")
   })
 
   test("rejects calldata for a different function", () => {

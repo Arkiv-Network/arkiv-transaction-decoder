@@ -39,12 +39,23 @@ export function encodeAttribute(attr: { key: string; value: string | number | bi
   }
 }
 
+export type RawAttribute = {
+  name: Hex
+  valueType: number
+  value: readonly [Hex, Hex, Hex, Hex]
+}
+
+/** Build an attribute with an arbitrary value type, including ones the decoder does not know. */
+export function rawAttribute(key: string, valueType: number, value: Uint8Array): RawAttribute {
+  return { name: toHex(key, { size: 32 }), valueType, value: encodeBytes128(value) }
+}
+
 export type RawOperation = {
   operationType: number
   entityKey: Hex
   payload: Hex
   contentType: { data: readonly [Hex, Hex, Hex, Hex] }
-  attributes: ReturnType<typeof encodeAttribute>[]
+  attributes: RawAttribute[]
   expiresAt: number
   newOwner: Address
 }

@@ -6,6 +6,7 @@ import {
   hexToBytes,
   parseTransaction,
   toFunctionSelector,
+  toHex,
 } from "viem"
 
 // Mirrors @arkiv-network/sdk (src/utils/arkivTransactions.ts, src/consts.ts).
@@ -119,6 +120,14 @@ function decodeBytes128(parts: readonly [Hex, Hex, Hex, Hex]): Uint8Array {
   return buf.slice(0, end)
 }
 
+// The four words hold one 128-byte string, so the fallback hex-encodes them once.
+// Joining the four 0x-prefixed words would produce a string that is not valid hex.
+function packedHex(parts: readonly [Hex, Hex, Hex, Hex]): Hex {
+  const buf = new Uint8Array(128)
+  parts.forEach((part, i) => buf.set(hexToBytes(part), i * 32))
+  return toHex(buf)
+}
+
 function decodeUtf8(bytes: Uint8Array): string | undefined {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
@@ -147,12 +156,17 @@ function decodeAttribute(attr: {
       return { key, valueType: attr.valueType, valueTypeName: "uint", value: BigInt(attr.value[0]).toString() }
     case AttributeValueType.String: {
       const bytes = decodeBytes128(attr.value)
-      return { key, valueType: attr.valueType, valueTypeName: "string", value: decodeUtf8(bytes) ?? attr.value.join("") }
+      return {
+        key,
+        valueType: attr.valueType,
+        valueTypeName: "string",
+        value: decodeUtf8(bytes) ?? packedHex(attr.value),
+      }
     }
     case AttributeValueType.EntityKey:
       return { key, valueType: attr.valueType, valueTypeName: "entityKey", value: attr.value[0] }
     default:
-      return { key, valueType: attr.valueType, valueTypeName: "unknown", value: attr.value.join("") }
+      return { key, valueType: attr.valueType, valueTypeName: "unknown", value: packedHex(attr.value) }
   }
 }
 
