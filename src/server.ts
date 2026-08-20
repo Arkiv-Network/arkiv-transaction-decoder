@@ -148,6 +148,25 @@ function parseChainId(raw: unknown): number | undefined {
   return value
 }
 
+/**
+ * Read the body and drop it, so the connection is left clean.
+ *
+ * Answering before the body has been read leaves the remainder on the socket, and fetch
+ * pools connections, so Bun parses those bytes as the next request's headers and answers
+ * 431. Verified: without this, the same oversized body alternates 200, 431, 200, 431. A 431
+ * is not 400, so the caller throws on it and retries that block forever. It is the halt
+ * this file exists to prevent, arriving one request later instead.
+ *
+ * Chunks are dropped as they arrive, so the cap still holds and nothing accumulates.
+ */
+async function discardBody(req: Request): Promise<void> {
+  if (req.body === null) return
+  const reader = req.body.getReader()
+  while (!(await reader.read()).done) {
+    // dropped on purpose
+  }
+}
+
 type DecodeRequest = { data: string | null; options: DecodeOptions; chainId?: number }
 
 async function extractRequest(req: Request, url: URL): Promise<DecodeRequest> {
@@ -165,7 +184,10 @@ async function extractRequest(req: Request, url: URL): Promise<DecodeRequest> {
   }
 
   const declared = Number(req.headers.get("content-length") ?? 0)
-  if (declared > MAX_INPUT_BYTES) throw new InputTooLarge(declared)
+  if (declared > MAX_INPUT_BYTES) {
+    await discardBody(req)
+    throw new InputTooLarge(declared)
+  }
 
   const contentType = req.headers.get("content-type") ?? ""
   const body = await req.text()

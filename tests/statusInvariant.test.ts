@@ -219,6 +219,39 @@ describe("the framework cannot answer before the handler", () => {
     )
   })
 
+  test("an oversized body does not poison the next request on the same connection", async () => {
+    // fetch pools connections. Answering before the body has been read leaves the
+    // remainder on the socket, and Bun parses those bytes as the next request's headers.
+    // Without discardBody in src/server.ts every second request on that connection is
+    // answered from garbage: 431 when the leftover bytes are "abab...", and 400 when they
+    // are "0000...". The status alone does not catch it, because a spurious 400 is inside
+    // the rule and the caller reads it as "not Arkiv calldata, skip" -- a transaction
+    // dropped silently, which is worse than the halt. So assert the answer, not the code.
+    const server = Bun.serve({ port: 0, maxRequestBodySize: MAX_INPUT_BYTES * 2, fetch: handleRequest })
+    try {
+      const answers: string[] = []
+      for (let i = 0; i < 4; i++) {
+        const res = await fetch(`http://localhost:${server.port}/api/decode`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: oversize,
+        })
+        const text = await res.text()
+        expect(verdict(`oversize body, request ${i + 1} on a reused connection`, res.status)).toBe(ALLOWED)
+        let code: string
+        try {
+          code = ((JSON.parse(text) as Record<string, unknown>).undecodable as { code: string })?.code
+        } catch {
+          code = `unparseable response: ${JSON.stringify(text.slice(0, 40))}`
+        }
+        answers.push(code)
+      }
+      expect(answers).toEqual(["INPUT_TOO_LARGE", "INPUT_TOO_LARGE", "INPUT_TOO_LARGE", "INPUT_TOO_LARGE"])
+    } finally {
+      server.stop(true)
+    }
+  })
+
   test("setting the ceiling at the cap is the trap the *2 avoids", async () => {
     // Documents why src/server.ts must not pass MAX_INPUT_BYTES here. If this ever stops
     // being 413, Bun changed and the comment there needs revisiting.

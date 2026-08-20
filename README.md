@@ -254,6 +254,12 @@ request itself, which a caller controls and a transaction cannot reach:
 hostile and edge-case calldata in the exact body shape the indexer sends, and fails the
 build on any third status.
 
+Two things sit outside this file and can still break the rule. `Bun.serve` answers a body
+above its own `maxRequestBodySize` with a `413` and never runs the handler, so that ceiling
+is set above `MAX_INPUT_BYTES`, never at it. And a body must be read before it is answered,
+even when the answer is "too large": the unread remainder stays on a pooled connection and
+Bun parses it as the next request, which comes back as garbage. Both are covered.
+
 Every error body carries `error` (a sentence) and `code` (stable). A declined selector also
 carries `selector`, `targetIsRegistry` and `knownSelectors`.
 
