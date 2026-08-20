@@ -1,10 +1,9 @@
 /**
  * Selector dispatch, and the entry point every caller imports.
  *
- * The rule the rest of the service is built on: calldata gets exactly two answers. It is
- * not ours, and we throw a DecodeError the caller skips; or it is ours, and we return a
- * result, marked undecodable when we could not read it. Nothing a stranger can put in a
- * transaction picks anything else.
+ * Calldata gets exactly two answers here: a DecodeError the caller skips, or a result,
+ * marked undecodable when we could not read it. Nothing a stranger puts in a transaction
+ * picks anything else. CALLDATA_STATUS in src/server.ts states the rule and why.
  */
 import { type Address, type Hex, getAddress, parseTransaction } from "viem"
 import {

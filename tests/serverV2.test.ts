@@ -242,11 +242,22 @@ describe("calldata anyone can send never picks the status code", () => {
 })
 
 describe("request handling", () => {
-  test("input above the cap is 413", async () => {
+  test("a body above the cap is a recorded gap at 200, never a 413", async () => {
+    // The body size is chosen by whoever sent the transaction, not by the caller, so it
+    // does not get to pick the status. 413 here was the same halt as the old 422: the
+    // indexer throws on it and scanBlockWithRetry retries that block forever. Ordinary
+    // valid usage reaches this cap too, at eight creates of MAX_PAYLOAD_BYTES each.
     const oversize = `0x${"00".repeat(MAX_INPUT_BYTES / 2)}`
     const { status, body } = await call("/api/decode", post({ data: oversize }))
-    expect(status).toBe(413)
-    expect(body.code).toBe("INPUT_TOO_LARGE")
+    expect(status).toBe(200)
+    expect(body.undecodable.code).toBe("INPUT_TOO_LARGE")
+    expect(body.operationCount).toBe(0)
+    expect(body.operations).toEqual([])
+
+    // The loud half, in the channel that cannot stop the caller.
+    const { body: selectors } = await call("/api/selectors")
+    const tally = selectors.gaps.find((g: { code: string }) => g.code === "INPUT_TOO_LARGE")
+    expect(tally.count).toBeGreaterThanOrEqual(1)
   })
 
   test("a malformed to or blockNumber is a request error, not a decode error", async () => {

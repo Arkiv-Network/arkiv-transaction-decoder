@@ -122,7 +122,10 @@ bun install
 bun start          # listens on :3000, override with PORT=...
 ```
 
-`MAX_INPUT_BYTES` caps a single decode request. Default 2 MiB.
+`MAX_INPUT_BYTES` caps a single decode request. Default 16 MiB, which clears the roughly
+15 MB body that the largest calldata a 30M gas block can carry turns into. A body above the
+cap is not an error: it comes back as `200` with `undecodable.code` `INPUT_TOO_LARGE`,
+because the body size is chosen by whoever sent the transaction, not by the caller.
 
 ## Docker
 
@@ -231,11 +234,13 @@ transaction. They never choose the status code.
 
 arkiv-chain-indexer maps `400` to "not an Arkiv call, skip it" and throws on every other
 status, and its caller then retries the same block forever with no cap. So a stranger who
-can make this service answer `422` or `501` can stop the indexer for good, and the
+can make this service answer `413`, `422` or `501` can stop the indexer for good, and the
 transaction that does it need not even succeed on chain: a reverted transaction is still
 in the block.
 
-Hence exactly two answers to calldata, and everything else is a fault in the request:
+Hence exactly two answers to calldata. A body above the cap and a bug inside the decoder
+are both `200` gaps, for the same reason. The only failing statuses left are faults in the
+request itself, which a caller controls and a transaction cannot reach:
 
 | status | `code` | meaning | caller should |
 |--------|--------|---------|---------------|
@@ -244,8 +249,10 @@ Hence exactly two answers to calldata, and everything else is a fault in the req
 | 400 | `UNKNOWN_SELECTOR` | a selector we do not know on a call to the registry itself | skip; this decoder has a gap |
 | 400 | `BAD_REQUEST` | invalid JSON, missing `data`, or a malformed `to` / `blockNumber` / `chainId` | fix the request |
 | 405 | `METHOD_NOT_ALLOWED` | not GET or POST | fix the request |
-| 413 | `INPUT_TOO_LARGE` | body above `MAX_INPUT_BYTES` | split the request |
-| 500 | `INTERNAL_ERROR` | bug | alert |
+
+`tests/statusInvariant.test.ts` holds the rule to those two statuses: it replays a corpus of
+hostile and edge-case calldata in the exact body shape the indexer sends, and fails the
+build on any third status.
 
 Every error body carries `error` (a sentence) and `code` (stable). A declined selector also
 carries `selector`, `targetIsRegistry` and `knownSelectors`.
@@ -264,6 +271,8 @@ at `200` with a machine-readable marker, so the caller records what it saw and k
 | `MALFORMED_CALLDATA` | response | the `execute` selector is ours, the argument block does not decode; `operations` is empty |
 | `UNKNOWN_OPERATION_TAG` | operation | tag outside 1..5, so the protocol added an operation |
 | `MALFORMED_OPERATION_DATA` | operation | the tag is known, `operationData` does not match the struct |
+| `INPUT_TOO_LARGE` | response | the body is above `MAX_INPUT_BYTES`, so the bytes were never read; `operations` is empty |
+| `DECODER_FAULT` | response | the decoder threw where it should have returned. A bug here, not bad calldata: `console.error` carries the stack |
 
 An undecodable operation keeps its raw `operationType` and takes the legacy `unknown(N)`
 name, never the name its tag claims: a struct we could not parse is not evidence that the
@@ -276,7 +285,11 @@ The loud half of a gap is a log line and a counter, not a status:
 [decoder-gap] UNKNOWN_OPERATION_TAG: Operation 0 has tag 6, which this decoder does not know (expected 1..5)
 ```
 
-Each distinct gap logs once, then only counts. `GET /api/selectors` serves the tally. A
+Each distinct gap logs once, then only counts. `GET /api/selectors` serves the tally, which
+holds 256 named subjects plus one anonymous bucket per code. The subject is attacker-chosen,
+so a full tally evicts its least frequent named subject and folds that count into the code's
+bucket. Single-shot noise churns out, a selector that recurs climbs in and stays, and a new
+registry selector is still logged and named after any amount of junk. A
 selector we decline is counted there too, whether or not the caller passed `to`, because
 arkiv-chain-indexer only calls this service for transactions already aimed at the registry
 but never says so: a loud path gated on `to` is silent for the one caller in production.

@@ -3,7 +3,7 @@
  *
  * One error class, meaning one thing: the calldata is not ours, so the caller skips it.
  * Everything else is a gap, a record that travels in the response body at 200 alongside a
- * log line and a counter. See decodeErrorResponse in src/server.ts for why the difference
+ * log line and a counter. See CALLDATA_STATUS in src/server.ts for why the difference
  * matters more than it looks.
  */
 import type { Hex } from "viem"
@@ -39,18 +39,19 @@ export class UnknownSelectorError extends DecodeError {
 /**
  * Calldata this decoder recognises as registry traffic but cannot fully decode.
  *
- * A gap is data, not an exception. The bytes reach us from a public chain, and a reverted
- * transaction still sits in the block, so anyone can send calldata that no decoder can
- * parse. Reporting that as a failing status hands a stranger the power to stop the caller:
- * arkiv-chain-indexer maps 400 to "skip", throws on every other status, and retries the
- * same block forever. So the gap travels in the body at 200, the caller records a row, and
- * the operator reads the log and the counter.
+ * A gap is data, not an exception. It travels in the body at 200, the caller records a
+ * row, and the operator reads the log line and the counter. CALLDATA_STATUS in
+ * src/server.ts states the rule, and why a failing status here would stop the caller.
  */
 export type DecoderGapCode =
   | "UNKNOWN_SELECTOR"
   | "MALFORMED_CALLDATA"
   | "MALFORMED_OPERATION_DATA"
   | "UNKNOWN_OPERATION_TAG"
+  /** Body above MAX_INPUT_BYTES, so the bytes were never read. */
+  | "INPUT_TOO_LARGE"
+  /** The decoder threw where it should have returned. Our bug, not a verdict on the bytes. */
+  | "DECODER_FAULT"
 
 /** The machine-readable marker a caller stores instead of stopping. */
 export type DecoderGap = {
