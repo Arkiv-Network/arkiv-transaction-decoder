@@ -14,7 +14,6 @@ import {
   EXECUTE_V2_SELECTOR,
   LEGACY_EXECUTE_SELECTOR,
   MAX_ATTRIBUTES,
-  MAX_PAYLOAD_BYTES,
   MAX_STR_BYTES,
 } from "../src/abi"
 import { MAX_INPUT_BYTES } from "../src/server"
@@ -196,25 +195,89 @@ export const HOSTILE_CALLDATA: HostileCase[] = [
 ]
 
 /**
- * Kept apart because each entry costs megabytes to build. Same rule, same corpus, and the
- * first one is the reviewer's case: ordinary valid usage, not an attack.
+ * What a transaction can be, which is what bounds every body this service can ever get.
+ *
+ * arkiv-chain-indexer forwards one transaction's calldata per request, and the txpool caps
+ * a transaction at 128 KB: arkiv-op-node core/txpool/legacypool/legacypool.go:54-61 sets
+ * txSlotSize = 32 * 1024 and txMaxSize = 4 * txSlotSize, with `16 * txSlotSize // 512KB`
+ * commented out directly above, so a raise to 512 KB is already contemplated there. Sizes
+ * below come from those two numbers and nothing else. MAX_PAYLOAD_BYTES is the wrong ruler:
+ * it is a per-payload protocol limit and says nothing about what fits in a transaction.
+ */
+const TX_MAX_SIZE_BYTES = 131_072
+const CONTEMPLATED_TX_MAX_SIZE_BYTES = 524_288
+
+/** One create carrying `payloadBytes` in $payload, so the calldata is a little above it. */
+function createCarrying(payloadBytes: number): string {
+  return encodeExecuteV2([
+    createOpV2({
+      minLifetime: 100n,
+      attributes: [
+        attr.str("$contentType", "application/octet-stream"),
+        attr.bytes("$payload", new Uint8Array(payloadBytes)),
+      ],
+    }),
+  ])
+}
+
+/** `0x` plus hex, so the string is 2 * bytes + 2 characters long. */
+function hexOfBytes(bytes: number): string {
+  return `0x${"ab".repeat(bytes)}`
+}
+
+/**
+ * Bodies the size of real traffic. None of these may ever be refused.
+ *
+ * Each one is a fraction over its transaction cap, since the payload alone is that size and
+ * the encoding adds to it, so decoding these proves the real thing decodes. They are the
+ * half of the corpus a too-low MAX_INPUT_BYTES breaks, and the half the old fraction-sized
+ * cases never contained.
+ *
+ * Built on call rather than at module scope, because each entry costs a megabyte.
+ */
+export function chainSizedCalldata(): HostileCase[] {
+  return [
+    { name: "a create carrying today's 128 KB transaction cap", data: createCarrying(TX_MAX_SIZE_BYTES) },
+    largestChainSizedCalldata(),
+  ]
+}
+
+/** The biggest body this service can ever be sent, once the contemplated 512 KB lands. */
+export function largestChainSizedCalldata(): HostileCase {
+  return {
+    name: "a create carrying the contemplated 512 KB transaction cap",
+    data: createCarrying(CONTEMPLATED_TX_MAX_SIZE_BYTES),
+  }
+}
+
+/**
+ * Bodies above the cap, sized in ABSOLUTE bytes.
+ *
+ * These used to be fractions of MAX_INPUT_BYTES, and that made them blind: the inputs shrank
+ * in lockstep with the ceiling, so the suite could not build a body larger than the cap at
+ * any cap value, and `MAX_INPUT_BYTES=100000 bun test` passed on a decoder that Bun would
+ * 413 on a real 128 KB transaction. A test that scales with the thing it tests cannot test
+ * it. The absolute case sits above MIN_INPUT_BYTES, so the oversize path is exercised at the
+ * smallest legal cap; the relative case keeps exercising it when an operator raises the cap,
+ * and it can no longer shrink under real traffic because the floor holds it at 2 MiB.
  */
 export function oversizeCalldata(): HostileCase[] {
-  const payload = new Uint8Array(MAX_PAYLOAD_BYTES)
-  const bigBatch = (creates: number) =>
-    encodeExecuteV2(
-      Array.from({ length: creates }, () =>
-        createOpV2({
-          minLifetime: 100n,
-          attributes: [attr.str("$contentType", "application/octet-stream"), attr.bytes("$payload", payload)],
-        }),
-      ),
-    )
-  return [
-    { name: "eight creates at MAX_PAYLOAD_BYTES, which is ordinary valid usage", data: bigBatch(8) },
-    { name: "a body above MAX_INPUT_BYTES", data: `0x${"00".repeat(MAX_INPUT_BYTES / 2)}` },
-    // Half again over the cap, still under the Bun.serve ceiling in src/server.ts, which is
-    // where an answer would stop coming from handleRequest at all.
-    { name: "a body well above MAX_INPUT_BYTES", data: `0x${"ab".repeat(MAX_INPUT_BYTES * 0.75)}` },
-  ]
+  return [oversizeAboveTheFloor(), capRelativeOversize()]
+}
+
+/**
+ * Above the configured cap whatever it is set to, so the oversize path is still exercised
+ * when an operator raises MAX_INPUT_BYTES. Relative on purpose, and safe now in a way it was
+ * not before: the floor holds it at 2 MiB, so it can no longer shrink under real traffic.
+ */
+export function capRelativeOversize(): HostileCase {
+  return { name: "just above MAX_INPUT_BYTES, whatever it is set to", data: hexOfBytes(Math.ceil(MAX_INPUT_BYTES / 2)) }
+}
+
+/**
+ * 3 MiB of characters: half again over MIN_INPUT_BYTES, so it is oversize at the smallest
+ * cap this service will start with, and it does not move when the cap does.
+ */
+export function oversizeAboveTheFloor(): HostileCase {
+  return { name: "a 3 MiB body, above the 2 MiB floor under MAX_INPUT_BYTES", data: hexOfBytes((3 * 1024 * 1024) / 2) }
 }

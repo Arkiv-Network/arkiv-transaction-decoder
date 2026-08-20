@@ -122,10 +122,23 @@ bun install
 bun start          # listens on :3000, override with PORT=...
 ```
 
-`MAX_INPUT_BYTES` caps a single decode request. Default 16 MiB, which clears the roughly
-15 MB body that the largest calldata a 30M gas block can carry turns into. A body above the
-cap is not an error: it comes back as `200` with `undecodable.code` `INPUT_TOO_LARGE`,
-because the body size is chosen by whoever sent the transaction, not by the caller.
+`MAX_INPUT_BYTES` caps a single decode request. Default 2 MiB, and 2 MiB is also the floor:
+a lower value refuses to start rather than run.
+
+The number comes from the transaction cap, not from the protocol's per-payload limit. A
+transaction is capped at 128 KB (`txMaxSize`, arkiv-op-node
+`core/txpool/legacypool/legacypool.go:61`, with a raise to 512 KB commented out directly
+above it), and arkiv-chain-indexer forwards one transaction's calldata per request. Hex
+encoding doubles that, the JSON envelope adds about 30 bytes, so the largest body this
+service can ever be sent is 262,175 bytes today and 1,048,607 bytes after the contemplated
+raise. 2 MiB is 8x the first and 2x the second.
+
+A body above the cap is not an error: it comes back as `200` with `undecodable.code`
+`INPUT_TOO_LARGE`, because the body size is chosen by whoever sent the transaction, not by
+the caller. Raising the cap is fine. Lowering it below the floor is what the floor prevents:
+a cap under real traffic answers ordinary transactions with `INPUT_TOO_LARGE`, and under the
+handler it drops `Bun.serve`'s own `413` below what a transaction can produce, which halts
+the indexer on a block it retries forever.
 
 ## Docker
 
@@ -256,9 +269,11 @@ build on any third status.
 
 Two things sit outside this file and can still break the rule. `Bun.serve` answers a body
 above its own `maxRequestBodySize` with a `413` and never runs the handler, so that ceiling
-is set above `MAX_INPUT_BYTES`, never at it. And a body must be read before it is answered,
-even when the answer is "too large": the unread remainder stays on a pooled connection and
-Bun parses it as the next request, which comes back as garbage. Both are covered.
+is derived from `MAX_INPUT_BYTES` and set above it, never at it, and `MAX_INPUT_BYTES` has a
+2 MiB floor, so neither can be configured under what a transaction can produce. And a body
+must be read before it is answered, even when the answer is "too large": the unread
+remainder stays on a pooled connection and Bun parses it as the next request, which comes
+back as garbage. Both are covered.
 
 Every error body carries `error` (a sentence) and `code` (stable). A declined selector also
 carries `selector`, `targetIsRegistry` and `knownSelectors`.

@@ -14,26 +14,41 @@ import {
 import { SERVICE_NAME, SERVICE_VERSION } from "./version"
 
 /**
- * Cap on a single decode request.
+ * Cap on a single decode request, and the floor under that cap.
  *
  * The cap stays, because memory has to be bounded: without it, one request makes this
  * service buffer whatever a sender chose to put on chain. What changed is the answer.
  * Crossing it used to be 413, and the body size is picked by whoever sent the transaction,
- * not by the caller, so it was a halt anyone could buy: roughly 1 MB of zero calldata to
- * the registry, about 4.2M gas at 4 gas per zero byte, and the transaction need not even
- * succeed. Ordinary valid usage reaches it too, since eight creates each carrying the
- * protocol's own MAX_PAYLOAD_BYTES is a 2.1 MB body. It is a recorded gap at 200 now.
+ * not by the caller, so it was a halt anyone could buy. It is a recorded gap at 200 now.
  * See CALLDATA_STATUS.
  *
- * The default sits above what one block can physically carry, so the cap does not fire on
- * traffic a chain can actually produce. A transaction's calldata is bounded by the block
- * gas limit, and at 4 gas per zero byte a 30M gas block holds about 7.5 MB of calldata,
- * which is about 15 MB once hex-encoded into a JSON body. The old 2 MiB default sat under
- * ordinary valid usage and dropped it. Measured at 16 MiB: eight creates carrying
- * MAX_PAYLOAD_BYTES each is a 2.11 MB body that decodes in about 55 ms, and the response
- * is 5 KB, because payload hex is truncated at DEFAULT_PAYLOAD_HEX_LIMIT rather than
- * echoed. Raise it with MAX_INPUT_BYTES if INPUT_TOO_LARGE ever climbs in
- * GET /api/selectors.
+ * SIZE IT FROM THE TRANSACTION CAP, NOT FROM MAX_PAYLOAD_BYTES. The protocol's per-payload
+ * limit says nothing about what fits in a transaction, and reasoning from it invents bodies
+ * the chain cannot carry: "eight creates each at MAX_PAYLOAD_BYTES" is a 2.1 MB body, and
+ * no such transaction exists, because the envelope caps things an order of magnitude lower.
+ * The binding limit is the txpool's. arkiv-op-node core/txpool/legacypool/legacypool.go:54-61
+ * sets txSlotSize = 32 * 1024 and
+ *     // txMaxSize = 16 * txSlotSize // 512KB
+ *     txMaxSize = 4 * txSlotSize // 128KB
+ * so 128 KB is the ceiling today and the commented line directly above it says a raise to
+ * 512 KB is already contemplated. Nothing bigger than one whole transaction can arrive:
+ * arkiv-chain-indexer forwards one transaction's calldata per request.
+ *
+ * The arithmetic, taken at the contemplated 512 KB rather than today's 128 KB:
+ *     a transaction                              524,288 bytes
+ *     hex-encoded, "0x" plus two chars per byte  1,048,578
+ *     inside {"data":"0x...","chainId":7733102}  1,048,607
+ *     rounded up to a power of two               2 MiB = 2,097,152
+ * So 2 MiB is 2x the contemplated worst case and 8x today's, since a 128 KB transaction is
+ * a 262,175 byte body. Measured on cheesecake, 395 registry transactions across three busy
+ * block regions ran to a maximum of 83,268 bytes of transaction, a third of today's cap.
+ *
+ * MIN_INPUT_BYTES is that same 2 MiB, so this knob only goes up. A cap below what the chain
+ * can produce is not a smaller memory budget, it is a halted scanner: real transactions come
+ * back INPUT_TOO_LARGE, and below the handler Bun answers 413 on its own (maxRequestBodySize
+ * at the foot of this file), which is the status the caller cannot survive. A misconfigured
+ * decoder that runs is worse than one that does not, so a value under the floor refuses to
+ * start.
  *
  * Number("2mb") is NaN, and every `size > NaN` is false, so a typo in the environment used
  * to remove the cap rather than fail. A bad value now falls back and says so.
@@ -49,7 +64,24 @@ function byteCapFromEnv(name: string, fallback: number): number {
   return value
 }
 
-export const MAX_INPUT_BYTES = byteCapFromEnv("MAX_INPUT_BYTES", 16 * 1024 * 1024)
+/** The smallest cap that still fits every transaction this chain can produce. See above. */
+export const MIN_INPUT_BYTES = 2 * 1024 * 1024
+
+export const MAX_INPUT_BYTES = byteCapFromEnv("MAX_INPUT_BYTES", MIN_INPUT_BYTES)
+
+if (MAX_INPUT_BYTES < MIN_INPUT_BYTES) {
+  // Loud and terminal on purpose. Starting anyway would answer ordinary chain traffic with
+  // INPUT_TOO_LARGE, or let Bun answer 413 under us, and either one wedges the scanner on a
+  // block it will retry forever. Refusing here is a page; a wedged scanner is a mystery.
+  console.error(
+    `MAX_INPUT_BYTES=${MAX_INPUT_BYTES} is below the ${MIN_INPUT_BYTES} byte minimum, so this decoder would ` +
+      "refuse transactions the chain can produce. A transaction is capped at 131072 bytes today (txMaxSize, " +
+      "arkiv-op-node core/txpool/legacypool/legacypool.go:61) with 524288 contemplated, which is a 1048607 " +
+      "byte JSON body once hex-encoded. Unset MAX_INPUT_BYTES or set it to at least " +
+      `${MIN_INPUT_BYTES}. Refusing to start.`,
+  )
+  process.exit(1)
+}
 
 const USAGE = {
   service: SERVICE_NAME,
@@ -345,8 +377,15 @@ if (import.meta.main) {
     port,
     // Bun answers an oversized body itself, with a 413, and never runs the handler. That
     // is the one way the two-status rule can be broken from outside this file, so the
-    // framework ceiling has to stay above ours: every body a block can produce must reach
-    // handleRequest and come back as a 200 gap. Never set this to MAX_INPUT_BYTES.
+    // framework ceiling has to stay above ours: every body a transaction can produce must
+    // reach handleRequest and come back as a 200 gap. Never set this to MAX_INPUT_BYTES.
+    //
+    // Derived rather than pinned to a constant, and that direction matters. The floor
+    // already holds the low end: MAX_INPUT_BYTES cannot go under 2 MiB, so this cannot go
+    // under 4 MiB, which is above anything the chain can send. A pinned constant would
+    // instead break at the high end, because an operator who raises MAX_INPUT_BYTES past
+    // the pin puts Bun's 413 back underneath the handler, which is the halt this whole file
+    // exists to prevent. Deriving keeps the ceiling above the cap at every legal value.
     maxRequestBodySize: MAX_INPUT_BYTES * 2,
     fetch: handleRequest,
   })
