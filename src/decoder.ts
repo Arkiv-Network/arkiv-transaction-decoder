@@ -32,6 +32,7 @@ import {
   PATCH_PARAMS,
   PAYLOAD_ATTRIBUTE,
   TRANSFER_OWNERSHIP_PARAMS,
+  U64_MAX,
   VIEW_FUNCTION_NAMES,
   WORD_LEN,
 } from "./abi"
@@ -450,10 +451,19 @@ const OPERATION_NAME_BY_TAG: Record<number, ArkivOperationName | undefined> = OP
 const ATTRIBUTE_TYPE_NAME_BY_ID: Record<number, ArkivAttributeTypeName | undefined> = ATTRIBUTE_TYPE_NAMES
 const VIEW_FUNCTION_BY_SELECTOR: Record<string, ArkivViewFunctionName | undefined> = VIEW_FUNCTION_NAMES
 
-/** max(expiresAt, blockNumber + minLifetime), the rule the executor applies on chain. */
+/**
+ * max(expiresAt, blockNumber + minLifetime), the rule the executor applies on chain,
+ * saturated at u64::MAX.
+ *
+ * The executor uses checked_add and reverts with ExpiryOverflow
+ * (arkiv-reth-executor/src/decode.rs:168), so a sum past u64::MAX is a block number the
+ * chain never records. Reporting the unsaturated sum would report a block that cannot
+ * exist: minLifetime = u64::MAX at block 222498 gives 18446744073709774113.
+ */
 export function resolveExpiry(expiresAt: bigint, minLifetime: bigint, blockNumber: bigint): bigint {
   const relative = blockNumber + minLifetime
-  return expiresAt > relative ? expiresAt : relative
+  const resolved = expiresAt > relative ? expiresAt : relative
+  return resolved > U64_MAX ? U64_MAX : resolved
 }
 
 export function creationFlagNames(flags: number): string[] {
@@ -686,8 +696,23 @@ function expiryFields(
   expiresAt: bigint,
   minLifetime: bigint,
   blockNumber: bigint | null,
+  index: number,
+  warnings: string[],
 ): Pick<DecodedOperationV2, "expiresAt" | "minLifetime" | "resolvedExpiresAt" | "expiresAtBlocks"> {
   const resolved = blockNumber === null ? null : resolveExpiry(expiresAt, minLifetime, blockNumber)
+  // Two expiries the executor refuses outright, so a decode that reports them without a
+  // word describes an entity the chain never created.
+  if (blockNumber !== null && resolved !== null) {
+    if (blockNumber + minLifetime > U64_MAX) {
+      warnings.push(
+        `operation ${index}: block ${blockNumber} + minLifetime ${minLifetime} overflows u64, so the chain rejects this with ExpiryOverflow; the resolved expiry is saturated at ${U64_MAX}`,
+      )
+    } else if (resolved <= blockNumber) {
+      warnings.push(
+        `operation ${index}: resolved expiry ${resolved} is not after block ${blockNumber}, so the chain rejects this with ExpiryDeadOnArrival`,
+      )
+    }
+  }
   return {
     expiresAt: expiresAt.toString(),
     minLifetime: minLifetime.toString(),
@@ -794,7 +819,7 @@ export function decodeOperationV2(
         attributes: split.user.map((a) => decodeAttributeV2(a, options.payloadHexLimit)),
         systemAttributes: split.systemNames,
         attributeCount: create.attributes.length,
-        ...expiryFields(create.expiresAt, create.minLifetime, options.blockNumber),
+        ...expiryFields(create.expiresAt, create.minLifetime, options.blockNumber, index, warnings),
       }
     }
     case ArkivOperationTag.Patch: {
@@ -815,7 +840,7 @@ export function decodeOperationV2(
       return {
         ...common,
         entityKey: extend.entityKey,
-        ...expiryFields(extend.expiresAt, extend.minLifetime, options.blockNumber),
+        ...expiryFields(extend.expiresAt, extend.minLifetime, options.blockNumber, index, warnings),
       }
     }
     case ArkivOperationTag.TransferOwnership: {

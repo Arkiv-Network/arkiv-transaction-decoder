@@ -371,9 +371,36 @@ describe("selector dispatch", () => {
 })
 
 describe("resolveExpiry", () => {
+  const U64_MAX = 2n ** 64n - 1n
+
   test("takes the later of the absolute and the relative expiry", () => {
     expect(resolveExpiry(0n, 900n, 241_669n)).toBe(242_569n)
     expect(resolveExpiry(300_000n, 900n, 241_669n)).toBe(300_000n)
     expect(resolveExpiry(242_000n, 900n, 241_669n)).toBe(242_569n)
+  })
+
+  test("saturates at u64::MAX instead of naming a block that cannot exist", () => {
+    // decode.rs:168 adds with checked_add and reverts with ExpiryOverflow, so 222498 +
+    // u64::MAX is not a block the chain ever records; the plain sum would report
+    // 18446744073709774113.
+    expect(resolveExpiry(0n, U64_MAX, 222_498n)).toBe(U64_MAX)
+    expect(222_498n + U64_MAX).toBeGreaterThan(U64_MAX)
+  })
+
+  test("warns for the two expiries the executor refuses", () => {
+    const overflow = decodeCalldataV2(encodeExecuteV2([extendOpV2(ENTITY_KEY, 0n, U64_MAX)]), {
+      blockNumber: 222_498n,
+    })
+    expect(overflow.warnings?.join(" ")).toContain("ExpiryOverflow")
+    expect(overflow.operations[0]!.resolvedExpiresAt).toBe(U64_MAX.toString())
+
+    // expiresAt 0 and minLifetime 0 resolve to the current block, which is not in the future.
+    const dead = decodeCalldataV2(encodeExecuteV2([createOpV2({})]), { blockNumber: 222_498n })
+    expect(dead.warnings?.join(" ")).toContain("ExpiryDeadOnArrival")
+
+    const fine = decodeCalldataV2(encodeExecuteV2([createOpV2({ minLifetime: 30n })]), {
+      blockNumber: 222_498n,
+    })
+    expect(fine.warnings).toBeUndefined()
   })
 })

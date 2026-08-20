@@ -145,6 +145,8 @@ export const CREATION_FLAG_PERMISSIONLESS_EXTENSION = 0b0000_0010
 export const CREATION_FLAGS_MASK = CREATION_FLAG_READONLY | CREATION_FLAG_PERMISSIONLESS_EXTENSION
 
 export const WORD_LEN = 32
+/** Widest value a uint64 field can hold. Also the executor's marker for a permanent entity. */
+export const U64_MAX = 2n ** 64n - 1n
 export const DECIMAL_SCALE = 18n
 export const MAX_PAYLOAD_BYTES = 131_072
 export const MAX_STR_BYTES = 128
