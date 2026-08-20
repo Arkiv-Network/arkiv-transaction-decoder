@@ -6,11 +6,9 @@ import {
   type DecodeOptions,
   KNOWN_SELECTORS,
   LEGACY_EXECUTE_SELECTOR,
-  MalformedCalldataError,
-  MalformedOperationError,
-  UnknownOperationTagError,
   UnknownSelectorError,
   decodeArkivTransaction,
+  decoderGaps,
 } from "./decoder"
 import { SERVICE_NAME, SERVICE_VERSION } from "./version"
 
@@ -154,30 +152,27 @@ function tooLarge(size: number): RequestError {
 }
 
 /**
- * Status codes are the contract that keeps a broken decoder from going unnoticed.
- * arkiv-chain-indexer treats 400 as "not an Arkiv call" and skips the transaction
- * without a word; every other status throws and surfaces. So 400 is reserved for
- * calldata that genuinely is not ours, and anything we should have understood but
- * did not is answered loudly.
+ * Calldata reaches this service from a public chain, so its bytes belong to whoever sent
+ * the transaction. They never choose the status code.
+ *
+ * arkiv-chain-indexer maps 400 to "not an Arkiv call, skip it" and throws on every other
+ * status, and its caller then retries the same block forever. So a stranger who can make
+ * this service answer 422 or 501 can stop the indexer for good, and the transaction that
+ * does it need not even succeed on chain: a reverted transaction is still in the block.
+ *
+ * Hence exactly two answers to calldata: 400 when it is not ours (the caller skips it),
+ * and 200 with an `undecodable` marker when it is ours but we could not read it (the
+ * caller records a row). The loud channel is the log line and the counter, never the
+ * status. Everything else that returns a failing status is a fault in the request
+ * itself: bad JSON, a bad `to`, a body above the cap, the wrong method.
  */
 function decodeErrorResponse(e: DecodeError): Response {
   const body: Record<string, unknown> = { error: e.message, code: e.code }
 
   if (e instanceof UnknownSelectorError) {
     body.selector = e.selector
+    body.targetIsRegistry = e.targetIsRegistry
     body.knownSelectors = KNOWN_SELECTORS
-    // A call to the registry itself that we cannot decode is a decoder gap, not a
-    // foreign transaction. 501: valid request, missing capability.
-    return json(body, e.targetIsRegistry ? 501 : 400)
-  }
-  if (e instanceof MalformedCalldataError) {
-    body.selector = e.selector
-    return json(body, 422)
-  }
-  if (e instanceof MalformedOperationError || e instanceof UnknownOperationTagError) {
-    body.operationIndex = e.operationIndex
-    body.operationTag = e.operationTag
-    return json(body, 422)
   }
   return json(body, 400)
 }

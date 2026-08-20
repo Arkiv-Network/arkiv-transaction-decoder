@@ -135,42 +135,64 @@ export class UnknownSelectorError extends DecodeError {
   }
 }
 
-/** Known selector, unparseable argument block. Means our ABI copy is wrong. */
-export class MalformedCalldataError extends DecodeError {
-  override readonly code: string = "MALFORMED_CALLDATA"
-  constructor(
-    readonly selector: Hex,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
-/** Known selector and tag, unparseable operationData. Means our struct copy is wrong. */
-export class MalformedOperationError extends DecodeError {
-  override readonly code: string = "MALFORMED_OPERATION_DATA"
-  constructor(
-    readonly operationIndex: number,
-    readonly operationTag: number,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
-/** Known selector, operation tag outside 1..5. Means the protocol added an operation. */
-export class UnknownOperationTagError extends DecodeError {
-  override readonly code: string = "UNKNOWN_OPERATION_TAG"
-  constructor(
-    readonly operationIndex: number,
-    readonly operationTag: number,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
 class ValueDecodeError extends Error {}
+
+/**
+ * Calldata this decoder recognises as registry traffic but cannot fully decode.
+ *
+ * A gap is data, not an exception. The bytes reach us from a public chain, and a reverted
+ * transaction still sits in the block, so anyone can send calldata that no decoder can
+ * parse. Reporting that as a failing status hands a stranger the power to stop the caller:
+ * arkiv-chain-indexer maps 400 to "skip", throws on every other status, and retries the
+ * same block forever. So the gap travels in the body at 200, the caller records a row, and
+ * the operator reads the log and the counter.
+ */
+export const DECODER_GAP_CODES = {
+  UNKNOWN_SELECTOR: "UNKNOWN_SELECTOR",
+  MALFORMED_CALLDATA: "MALFORMED_CALLDATA",
+  MALFORMED_OPERATION_DATA: "MALFORMED_OPERATION_DATA",
+  UNKNOWN_OPERATION_TAG: "UNKNOWN_OPERATION_TAG",
+} as const
+
+export type DecoderGapCode = keyof typeof DECODER_GAP_CODES
+
+/** The machine-readable marker a caller stores instead of stopping. */
+export type DecoderGap = {
+  code: DecoderGapCode
+  message: string
+}
+
+export type DecoderGapTally = { code: DecoderGapCode; subject: string; count: number }
+
+const tallies = new Map<string, DecoderGapTally>()
+
+/**
+ * The operator-facing half of a gap: a log line and a counter. Status codes cannot carry
+ * this, because the caller that would see the status is the one we must not stop.
+ *
+ * Only the first occurrence of each (code, subject) logs. A chain carries a lot of ordinary
+ * foreign traffic, and a line per transaction buries the one new selector that matters.
+ */
+export function recordGap(gap: DecoderGap, subject = ""): DecoderGap {
+  const key = subject === "" ? gap.code : `${gap.code} ${subject}`
+  const tally = tallies.get(key)
+  if (tally === undefined) {
+    tallies.set(key, { code: gap.code, subject, count: 1 })
+    console.warn(`[decoder-gap] ${key}: ${gap.message}`)
+  } else {
+    tally.count += 1
+  }
+  return gap
+}
+
+/** Every gap seen since start, most frequent first. Served by GET /api/selectors. */
+export function decoderGaps(): DecoderGapTally[] {
+  return [...tallies.values()].sort((a, b) => b.count - a.count)
+}
+
+export function resetDecoderGaps(): void {
+  tallies.clear()
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -339,10 +361,15 @@ export type DecodedPayload = {
   truncated?: true
 }
 
+/** Mirrors the legacy path's `unknown(N)`: a tag we read but cannot act on. */
+export type UnknownOperationName = `unknown(${number})`
+
 export type DecodedOperationV2 = {
   index: number
   operationType: number
-  operation: ArkivOperationName
+  operation: ArkivOperationName | UnknownOperationName
+  /** set when this one operation could not be decoded; the batch around it still decodes */
+  undecodable?: DecoderGap
   /** null for a create: the key is derived on chain from the owner nonce, so bare calldata cannot report it */
   entityKey: Hex | null
   /** create only, decimal string (uint128 overflows a JS number) */
@@ -371,6 +398,8 @@ export type DecodedTransactionV2 = {
   functionName: "execute"
   abi: "v2"
   selector: Hex
+  /** set when the argument block itself did not decode, so there are no operations to report */
+  undecodable?: DecoderGap
   to?: Address | null
   /** set when `to` is present and differs from the known Arkiv registry address */
   warning?: string
@@ -655,6 +684,41 @@ function expiryFields(
   }
 }
 
+/**
+ * Every field a caller needs, at its empty value. An operation the decoder cannot read is
+ * still returned in this shape, so a batch of five with one bad tag reports five rows.
+ */
+function blankOperation(index: number, tag: number): DecodedOperationV2 {
+  return {
+    index,
+    operationType: tag,
+    operation: `unknown(${tag})`,
+    entityKey: null,
+    salt: null,
+    creationFlags: null,
+    creationFlagNames: null,
+    contentType: null,
+    payload: emptyPayload(),
+    attributes: [],
+    systemAttributes: [],
+    attributeCount: 0,
+    expiresAt: null,
+    minLifetime: null,
+    resolvedExpiresAt: null,
+    expiresAtBlocks: 0,
+    newOwner: null,
+  }
+}
+
+/**
+ * The operation keeps the raw tag and the legacy `unknown(N)` name, never the name the tag
+ * claims: a struct we could not parse is not evidence that the operation it names happened,
+ * and a metrics pipeline must not count it as one.
+ */
+function undecodableOperation(index: number, tag: number, code: DecoderGapCode, message: string): DecodedOperationV2 {
+  return { ...blankOperation(index, tag), undecodable: recordGap({ code, message }) }
+}
+
 export function decodeOperationV2(
   op: { operation: number; operationData: Hex },
   index: number,
@@ -665,9 +729,10 @@ export function decodeOperationV2(
   const name = OPERATION_NAME_BY_TAG[tag]
   const params = OPERATION_PARAMS[tag]
   if (name === undefined || params === undefined) {
-    throw new UnknownOperationTagError(
+    return undecodableOperation(
       index,
       tag,
+      "UNKNOWN_OPERATION_TAG",
       `Operation ${index} has tag ${tag}, which this decoder does not know (expected 1..5)`,
     )
   }
@@ -676,35 +741,18 @@ export function decodeOperationV2(
   try {
     ;[decoded] = decodeAbiParameters(params, op.operationData) as [unknown]
   } catch (e) {
-    throw new MalformedOperationError(
+    return undecodableOperation(
       index,
       tag,
-      `Operation ${index} (${name}) has operationData that does not match the ${name} struct: ${
+      "MALFORMED_OPERATION_DATA",
+      `Operation ${index} claims tag ${tag} (${name}) but its operationData does not match the ${name} struct: ${
         e instanceof Error ? e.message : String(e)
       }`,
     )
   }
   checkCanonical(params, decoded, op.operationData, index, warnings)
 
-  const common = {
-    index,
-    operationType: tag,
-    operation: name,
-    entityKey: null as Hex | null,
-    salt: null as string | null,
-    creationFlags: null as number | null,
-    creationFlagNames: null as string[] | null,
-    contentType: null as string | null,
-    payload: emptyPayload(),
-    attributes: [] as DecodedAttributeV2[],
-    systemAttributes: [] as string[],
-    attributeCount: 0,
-    expiresAt: null as string | null,
-    minLifetime: null as string | null,
-    resolvedExpiresAt: null as string | null,
-    expiresAtBlocks: 0,
-    newOwner: null as Address | null,
-  }
+  const common = { ...blankOperation(index, tag), operation: name }
 
   switch (tag) {
     case ArkivOperationTag.Create: {
@@ -775,12 +823,21 @@ export function decodeCalldataV2(data: Hex, options: DecodeOptions = {}): Decode
   try {
     ;({ args } = decodeFunctionData({ abi: EXECUTE_V2_ABI, data }))
   } catch (e) {
-    throw new MalformedCalldataError(
-      EXECUTE_V2_SELECTOR,
-      `Calldata carries the Arkiv execute() selector ${EXECUTE_V2_SELECTOR} but the argument block does not decode: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    )
+    // The selector is ours, so this is registry traffic and the caller must record it.
+    // There are no operations to report, which is exactly what an empty batch looks like.
+    return {
+      functionName: "execute",
+      abi: "v2",
+      selector: EXECUTE_V2_SELECTOR,
+      undecodable: recordGap({
+        code: "MALFORMED_CALLDATA",
+        message: `Calldata carries the Arkiv execute() selector ${EXECUTE_V2_SELECTOR} but the argument block does not decode: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      }),
+      operationCount: 0,
+      operations: [],
+    }
   }
 
   const warnings: string[] = []

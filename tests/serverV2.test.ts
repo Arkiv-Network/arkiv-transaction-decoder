@@ -92,11 +92,12 @@ describe("an unrecognised call is never silently skippable", () => {
     expect(body.knownSelectors).toEqual([EXECUTE_V2_SELECTOR, LEGACY_EXECUTE_SELECTOR])
   })
 
-  test("an unknown selector aimed at the registry is 501, which callers do not skip", async () => {
+  test("an unknown selector aimed at the registry names the target and still skips", async () => {
     const { status, body } = await call("/api/decode", post({ data: UNKNOWN_CALLDATA, to: ARKIV_ADDRESS }))
-    expect(status).toBe(501)
+    expect(status).toBe(400)
     expect(body.code).toBe("UNKNOWN_SELECTOR")
     expect(body.selector).toBe("0xdeadbeef")
+    expect(body.targetIsRegistry).toBe(true)
   })
 
   test("a serialized transaction to the registry carries its own target", async () => {
@@ -110,30 +111,58 @@ describe("an unrecognised call is never silently skippable", () => {
       gas: 21_000n,
       data: UNKNOWN_CALLDATA as `0x${string}`,
     })
-    const { status } = await call("/api/decode", post({ data }))
-    expect(status).toBe(501)
-  })
-
-  test("an unknown operation tag is 422, not a skip", async () => {
-    const data = encodeExecuteV2([{ operation: 9, operationData: "0x" }])
     const { status, body } = await call("/api/decode", post({ data }))
-    expect(status).toBe(422)
-    expect(body.code).toBe("UNKNOWN_OPERATION_TAG")
-    expect(body.operationTag).toBe(9)
-    expect(body.operationIndex).toBe(0)
+    // A serialized transaction carries its own `to`, so its bytes used to pick the status.
+    expect(status).toBe(400)
+    expect(body.targetIsRegistry).toBe(true)
+  })
+})
+
+/**
+ * The blocker this suite exists for. arkiv-chain-indexer sends {data} or {data, chainId},
+ * never `to`; it maps 400 to skip and throws on everything else; and scanBlockWithRetry
+ * then retries the same block forever with no cap. So any status but 200 or 400 on
+ * attacker-controlled calldata stops the indexer permanently.
+ */
+describe("calldata anyone can send never picks the status code", () => {
+  /** The exact body arkiv-chain-indexer sends: data plus chainId, and no `to`. */
+  function asIndexer(data: string) {
+    return post({ data, chainId: 7733102 })
+  }
+
+  test("an unknown operation tag is a 200 row, not a 422", async () => {
+    const data = encodeExecuteV2([{ operation: 6, operationData: "0x" }])
+    const { status, body } = await call("/api/decode", asIndexer(data))
+    expect(status).toBe(200)
+    expect(body.operations[0].undecodable.code).toBe("UNKNOWN_OPERATION_TAG")
+    expect(body.operations[0].operation).toBe("unknown(6)")
+    expect(body.operations[0].operationType).toBe(6)
   })
 
-  test("operationData that does not match the struct is 422", async () => {
+  test("operationData that does not match the struct is a 200 row", async () => {
     const data = encodeExecuteV2([{ operation: 5, operationData: "0x1234" }])
-    const { status, body } = await call("/api/decode", post({ data }))
-    expect(status).toBe(422)
-    expect(body.code).toBe("MALFORMED_OPERATION_DATA")
+    const { status, body } = await call("/api/decode", asIndexer(data))
+    expect(status).toBe(200)
+    expect(body.operations[0].undecodable.code).toBe("MALFORMED_OPERATION_DATA")
   })
 
-  test("a known selector with a broken argument block is 422", async () => {
-    const { status, body } = await call("/api/decode", post({ data: `${EXECUTE_V2_SELECTOR}deadbeef` }))
-    expect(status).toBe(422)
-    expect(body.code).toBe("MALFORMED_CALLDATA")
+  test("a known selector with a broken argument block is a 200 empty batch", async () => {
+    const { status, body } = await call("/api/decode", asIndexer(`${EXECUTE_V2_SELECTOR}deadbeef`))
+    expect(status).toBe(200)
+    expect(body.undecodable.code).toBe("MALFORMED_CALLDATA")
+    expect(body.operations).toEqual([])
+    expect(body.chainId).toBe(7733102)
+  })
+
+  test("the shape arkiv-chain-indexer parses survives an undecodable operation", async () => {
+    const data = encodeExecuteV2([{ operation: 6, operationData: "0xdeadbeef" }])
+    const { body } = await call("/api/decode", asIndexer(data))
+    // parseDecoderOperation throws unless all four of these are present and typed.
+    const op = body.operations[0]
+    expect(typeof op.operationType).toBe("number")
+    expect(typeof op.operation).toBe("string")
+    expect(typeof op.payload.size).toBe("number")
+    expect(Array.isArray(op.attributes)).toBe(true)
   })
 
   test("a registry read-only call decodes to zero operations, not an error", async () => {

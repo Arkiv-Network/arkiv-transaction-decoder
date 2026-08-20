@@ -7,9 +7,6 @@ import {
   type DecodedTransaction,
   type DecodedTransactionV2,
   type DecodedViewCall,
-  MalformedCalldataError,
-  MalformedOperationError,
-  UnknownOperationTagError,
   UnknownSelectorError,
   decodeArkivTransaction,
   decodeCalldataV2,
@@ -210,30 +207,47 @@ describe("attribute values", () => {
   })
 })
 
-describe("structural failures are loud", () => {
-  test("an unknown operation tag throws", () => {
-    const calldata = encodeExecuteV2([{ operation: 9, operationData: "0x" }])
-    expect(() => decodeCalldataV2(calldata)).toThrow(UnknownOperationTagError)
-    try {
-      decodeCalldataV2(calldata)
-    } catch (e) {
-      expect((e as UnknownOperationTagError).operationTag).toBe(9)
-      expect((e as UnknownOperationTagError).operationIndex).toBe(0)
-      expect((e as UnknownOperationTagError).code).toBe("UNKNOWN_OPERATION_TAG")
-    }
+describe("undecodable calldata is recorded, never thrown", () => {
+  // Anyone can send these bytes to the registry. The node reverts the transaction, but it
+  // stays in the block and the indexer must still get past it, so none of them may throw.
+  test("an unknown operation tag becomes a row, keeping the raw tag", () => {
+    const result = decodeCalldataV2(encodeExecuteV2([{ operation: 9, operationData: "0x" }]))
+    const op = result.operations[0]!
+    expect(op.undecodable?.code).toBe("UNKNOWN_OPERATION_TAG")
+    expect(op.operationType).toBe(9)
+    expect(op.operation).toBe("unknown(9)")
+    expect(op.payload.size).toBe(0)
+    expect(op.attributes).toEqual([])
   })
 
-  test("operationData that does not match the struct throws", () => {
+  test("operationData that does not match the struct becomes a row", () => {
     const calldata = encodeExecuteV2([{ operation: ArkivOperationTag.Delete, operationData: "0x1234" }])
-    expect(() => decodeCalldataV2(calldata)).toThrow(MalformedOperationError)
+    const op = decodeCalldataV2(calldata).operations[0]!
+    expect(op.undecodable?.code).toBe("MALFORMED_OPERATION_DATA")
+    // The tag claims delete, but a struct we could not parse is not proof a delete happened.
+    expect(op.operation).toBe("unknown(5)")
+    expect(op.operationType).toBe(ArkivOperationTag.Delete)
   })
 
-  test("a correct selector with a broken argument block throws", () => {
-    expect(() => decodeCalldataV2(`${EXECUTE_V2_SELECTOR}deadbeef`)).toThrow(MalformedCalldataError)
+  test("one bad operation does not cost the batch its good ones", () => {
+    const result = decodeCalldataV2(
+      encodeExecuteV2([deleteOpV2(ENTITY_KEY), { operation: 6, operationData: "0x" }, deleteOpV2(OTHER_KEY)]),
+    )
+    expect(result.operations.map((op) => op.operation)).toEqual(["delete", "unknown(6)", "delete"])
+    expect(result.operations.map((op) => op.undecodable?.code)).toEqual([
+      undefined,
+      "UNKNOWN_OPERATION_TAG",
+      undefined,
+    ])
+    expect(result.operations[2]!.entityKey).toBe(OTHER_KEY)
   })
 
-  test("every structural error is still a DecodeError for existing callers", () => {
-    expect(() => decodeCalldataV2(`${EXECUTE_V2_SELECTOR}deadbeef`)).toThrow(DecodeError)
+  test("a correct selector with a broken argument block is an empty batch, not a throw", () => {
+    const result = decodeCalldataV2(`${EXECUTE_V2_SELECTOR}deadbeef`)
+    expect(result.undecodable?.code).toBe("MALFORMED_CALLDATA")
+    expect(result.operationCount).toBe(0)
+    expect(result.operations).toEqual([])
+    expect(result.selector).toBe(EXECUTE_V2_SELECTOR)
   })
 
   test("a non-canonical encoding is reported as a warning, not a failure", () => {
