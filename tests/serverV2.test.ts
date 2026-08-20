@@ -87,8 +87,11 @@ describe("an unrecognised call is never silently skippable", () => {
   test("an unknown selector with no known target is 400 but names itself", async () => {
     const { status, body } = await call("/api/decode", post({ data: UNKNOWN_CALLDATA }))
     expect(status).toBe(400)
-    expect(body.code).toBe("UNKNOWN_SELECTOR")
+    // Foreign traffic until the target says otherwise, but still named so the caller
+    // can see which selector was declined.
+    expect(body.code).toBe("NOT_ARKIV_CALLDATA")
     expect(body.selector).toBe("0xdeadbeef")
+    expect(body.targetIsRegistry).toBe(false)
     expect(body.knownSelectors).toEqual([EXECUTE_V2_SELECTOR, LEGACY_EXECUTE_SELECTOR])
   })
 

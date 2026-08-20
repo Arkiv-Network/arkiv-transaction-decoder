@@ -124,15 +124,26 @@ export class DecodeError extends Error {
   readonly code: string = "NOT_ARKIV_CALLDATA"
 }
 
-/** The 4-byte selector is not one we decode. Loud when the call targets the registry. */
+/**
+ * The 4-byte selector is not one we decode. Always names the selector, so the caller can
+ * see which one, but only claims to be a decoder gap when the call is known to have
+ * reached the registry.
+ *
+ * The target is the only signal that separates the two. Shape is not: every well-formed
+ * EVM call is word-aligned, so a plain ERC20 transfer looks exactly like a registry call
+ * with a selector we are missing. Reading UNKNOWN_SELECTOR onto both would put every token
+ * transfer on the chain in the decoder-gap bucket and leave anyone counting
+ * NOT_ARKIV_CALLDATA to size foreign traffic counting the wrong thing.
+ */
 export class UnknownSelectorError extends DecodeError {
-  override readonly code: string = "UNKNOWN_SELECTOR"
+  override readonly code: string
   constructor(
     readonly selector: Hex,
     readonly targetIsRegistry: boolean,
     message: string,
   ) {
     super(message)
+    this.code = targetIsRegistry ? "UNKNOWN_SELECTOR" : "NOT_ARKIV_CALLDATA"
   }
 }
 
@@ -944,13 +955,12 @@ function decodeBySelector(data: Hex, options: DecodeOptions): DecodeResult | nul
  * how a new registry selector becomes visible without that caller changing anything.
  */
 function unknownCall(data: Hex, to: Address | null): DecodeError {
-  const targetIsRegistry = to !== null && to.toLowerCase() === ARKIV_ADDRESS.toLowerCase()
-  const wordAlignedTail = data.length >= 10 && (data.length - 10) % 64 === 0
-  if (!targetIsRegistry && !wordAlignedTail) {
+  if (data.length < 10) {
     return new DecodeError(
       `Data is neither Arkiv execute() calldata (selectors ${KNOWN_SELECTORS.join(", ")}) nor a parseable serialized transaction`,
     )
   }
+  const targetIsRegistry = to !== null && to.toLowerCase() === ARKIV_ADDRESS.toLowerCase()
   const selector = selectorOf(data)
   const message = targetIsRegistry
     ? `Call to the Arkiv registry ${ARKIV_ADDRESS} uses selector ${selector}, which this decoder does not know. Known selectors: ${KNOWN_SELECTORS.join(", ")}`
@@ -981,7 +991,10 @@ export function decodeArkivTransaction(input: string, options: DecodeOptions = {
   }
 
   const to = tx.to ? getAddress(tx.to) : (options.to ?? null)
-  if (!tx.data) throw unknownCall(trimmed, to)
+  // No calldata means no selector, so there is nothing to name or to count.
+  if (!tx.data) {
+    throw new DecodeError(`Serialized transaction to ${to ?? "an unknown target"} carries no calldata`)
+  }
 
   const decoded = decodeBySelector(tx.data, { ...options, to })
   if (!decoded) throw unknownCall(tx.data, to)

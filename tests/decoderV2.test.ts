@@ -324,6 +324,27 @@ describe("selector dispatch", () => {
     expect(error).toBeInstanceOf(UnknownSelectorError)
     expect(error!.targetIsRegistry).toBe(false)
     expect(error!.selector).toBe("0xdeadbeef")
+    // Named, but not claimed as a decoder gap: we do not know it reached the registry.
+    expect(error!.code).toBe("NOT_ARKIV_CALLDATA")
+  })
+
+  test("an ordinary token transfer is foreign traffic, not a decoder gap", () => {
+    // Every well-formed EVM call is word-aligned, so shape cannot separate the two. Only
+    // the target can, and a caller sizing foreign traffic by NOT_ARKIV_CALLDATA has to see
+    // this one in that bucket.
+    const transfer = `0xa9059cbb${"00".repeat(31)}11${"00".repeat(31)}2a` as const
+    try {
+      decodeArkivTransaction(transfer)
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect((e as DecodeError).code).toBe("NOT_ARKIV_CALLDATA")
+    }
+    try {
+      decodeArkivTransaction(transfer, { to: ARKIV_ADDRESS })
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect((e as DecodeError).code).toBe("UNKNOWN_SELECTOR")
+    }
   })
 
   test("an unknown selector aimed at the registry is flagged as a decoder gap", () => {
@@ -358,9 +379,9 @@ describe("selector dispatch", () => {
     }
   })
 
-  test("plainly foreign data is still a plain DecodeError", () => {
+  test("data too short to carry a selector is a plain DecodeError", () => {
     try {
-      decodeArkivTransaction(toHex("garbage"))
+      decodeArkivTransaction("0x1234")
       throw new Error("expected a throw")
     } catch (e) {
       expect(e).toBeInstanceOf(DecodeError)
