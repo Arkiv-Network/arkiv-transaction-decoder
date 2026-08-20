@@ -1,7 +1,7 @@
 // Encoding helpers mirroring @arkiv-network/sdk src/utils/arkivTransactions.ts,
 // used to build realistic execute() calldata as test vectors.
 import { type Address, type Hex, encodeFunctionData, toBytes, toHex } from "viem"
-import { AttributeValueType, ENTITY_EXECUTE_ABI, EntityOperationType } from "../src/decoder"
+import { AttributeValueType, ENTITY_EXECUTE_ABI, EntityOperationType } from "../src/abi"
 
 export const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000"
 const ZERO_32 = `0x${"00".repeat(32)}` as Hex

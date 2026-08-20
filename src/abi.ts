@@ -1,7 +1,11 @@
-import type { Hex } from "viem"
+import { type Address, type Hex, toFunctionSelector } from "viem"
 
 /**
- * Arkiv entity-registry ABI, generation 2 (`execute((uint8,bytes)[])`, selector 0x49650044).
+ * Every Arkiv entity-registry ABI this service decodes: generation 2
+ * (`execute((uint8,bytes)[])`, selector 0x49650044) and the generation-1 ABI below it.
+ *
+ * One file, because a selector we were missing is what this branch exists to fix and a
+ * second copy somewhere else is how the next one gets missed.
  *
  * This is a hand-maintained copy. The source of truth is
  * Arkiv-Network/arkiv, crates/arkiv-bindings/src/lib.rs.
@@ -181,3 +185,79 @@ export const VIEW_FUNCTION_NAMES = {
 } as const
 
 export type ArkivViewFunctionName = (typeof VIEW_FUNCTION_NAMES)[keyof typeof VIEW_FUNCTION_NAMES]
+
+// ---------------------------------------------------------------------------
+// Legacy registry ABI (generation 1). Kept verbatim: existing callers still send it.
+// ---------------------------------------------------------------------------
+
+// Mirrors @arkiv-network/sdk (src/utils/arkivTransactions.ts, src/consts.ts).
+// Operation struct: (uint8 operationType, bytes32 entityKey, bytes payload,
+//   (bytes32[4] data) contentType, (bytes32 name, uint8 valueType, bytes32[4] value)[] attributes,
+//   uint32 expiresAt, address newOwner)
+export const ARKIV_ADDRESS = "0x4400000000000000000000000000000000000044" as Address
+
+export const ENTITY_EXECUTE_ABI = [
+  {
+    type: "function",
+    name: "execute",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "ops",
+        type: "tuple[]",
+        components: [
+          { name: "operationType", type: "uint8" },
+          { name: "entityKey", type: "bytes32" },
+          { name: "payload", type: "bytes" },
+          {
+            name: "contentType",
+            type: "tuple",
+            components: [{ name: "data", type: "bytes32[4]" }],
+          },
+          {
+            name: "attributes",
+            type: "tuple[]",
+            components: [
+              { name: "name", type: "bytes32" },
+              { name: "valueType", type: "uint8" },
+              { name: "value", type: "bytes32[4]" },
+            ],
+          },
+          { name: "expiresAt", type: "uint32" },
+          { name: "newOwner", type: "address" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const
+
+export const LEGACY_EXECUTE_SELECTOR = toFunctionSelector(ENTITY_EXECUTE_ABI[0])
+/** @deprecated kept for callers written against the single-ABI decoder */
+export const EXECUTE_SELECTOR = LEGACY_EXECUTE_SELECTOR
+
+export enum EntityOperationType {
+  Create = 1,
+  Update = 2,
+  Extend = 3,
+  Transfer = 4,
+  Delete = 5,
+  Expire = 6,
+}
+
+export enum AttributeValueType {
+  Uint = 1,
+  String = 2,
+  EntityKey = 3,
+}
+
+/** EntityOperationType::name() of generation 1. Paired with OPERATION_NAMES_V2 above:
+ *  the two vocabularies collide, so neither may be read onto the other. */
+export const LEGACY_OPERATION_NAMES: Record<number, string> = {
+  [EntityOperationType.Create]: "create",
+  [EntityOperationType.Update]: "update",
+  [EntityOperationType.Extend]: "extend",
+  [EntityOperationType.Transfer]: "transfer",
+  [EntityOperationType.Delete]: "delete",
+  [EntityOperationType.Expire]: "expire",
+}

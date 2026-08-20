@@ -1,11 +1,10 @@
 import { getAddress, isAddress } from "viem"
 import type { Address } from "viem"
-import { EXECUTE_V2_SELECTOR, REGISTRY_SIGNATURES } from "./abi"
+import { EXECUTE_V2_SELECTOR, LEGACY_EXECUTE_SELECTOR, REGISTRY_SIGNATURES } from "./abi"
 import {
   DecodeError,
   type DecodeOptions,
   KNOWN_SELECTORS,
-  LEGACY_EXECUTE_SELECTOR,
   UnknownSelectorError,
   decodeArkivTransaction,
   decoderGaps,
