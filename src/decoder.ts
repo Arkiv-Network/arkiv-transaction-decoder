@@ -389,8 +389,20 @@ export type DecodedOperationV2 = {
   minLifetime: string | null
   /** max(expiresAt, blockNumber + minLifetime); only set when the caller supplied blockNumber */
   resolvedExpiresAt: string | null
-  /** compatibility field for arkiv-chain-indexer: the resolved block when known, else the raw expiresAt */
-  expiresAtBlocks: number
+  /**
+   * Compatibility field for arkiv-chain-indexer: the resolved block when known, else the
+   * raw expiresAt. A decimal string, like the three fields above it.
+   *
+   * It was a JS number, which cannot hold a uint64. arkiv-reth-executor expresses
+   * permanence as expiresAt = u64::MAX (decode.rs:167), an ordinary successful value, and
+   * Number() turns it into 18446744073709552000: wrong by 385 and past the int8 ceiling of
+   * the indexer's expires_at_blocks column, so the INSERT fails and the block retries
+   * forever. The first permanent entity on the network would stop indexing.
+   *
+   * A consumer that reads this as a number now sees a string and falls back, which loses a
+   * value rather than a chain. resolvedExpiresAt carries the same number exactly.
+   */
+  expiresAtBlocks: string
   newOwner: Address | null
 }
 
@@ -680,7 +692,7 @@ function expiryFields(
     expiresAt: expiresAt.toString(),
     minLifetime: minLifetime.toString(),
     resolvedExpiresAt: resolved === null ? null : resolved.toString(),
-    expiresAtBlocks: Number(resolved ?? expiresAt),
+    expiresAtBlocks: (resolved ?? expiresAt).toString(),
   }
 }
 
@@ -705,7 +717,7 @@ function blankOperation(index: number, tag: number): DecodedOperationV2 {
     expiresAt: null,
     minLifetime: null,
     resolvedExpiresAt: null,
-    expiresAtBlocks: 0,
+    expiresAtBlocks: "0",
     newOwner: null,
   }
 }

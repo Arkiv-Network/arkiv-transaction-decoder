@@ -90,7 +90,20 @@ describe("decodeCalldataV2 operations", () => {
 
     const withBlock = decodeOne(calldata, { blockNumber: 222495n })
     expect(withBlock.resolvedExpiresAt).toBe("222645")
-    expect(withBlock.expiresAtBlocks).toBe(222645)
+    expect(withBlock.expiresAtBlocks).toBe("222645")
+  })
+
+  test("a permanent entity keeps its exact expiry instead of rounding to a wrong number", () => {
+    // arkiv-reth-executor decode.rs:167 expresses permanence as expiresAt = u64::MAX. It is
+    // a normal successful value, and Number() renders it 18446744073709552000: wrong by 385
+    // and past the int8 ceiling of the indexer's expires_at_blocks column.
+    const u64Max = 2n ** 64n - 1n
+    const op = decodeOne(encodeExecuteV2([createOpV2({ expiresAt: u64Max })]), { blockNumber: 222_498n })
+    for (const field of [op.expiresAt, op.resolvedExpiresAt, op.expiresAtBlocks]) {
+      expect(field).toBe("18446744073709551615")
+      expect(field).not.toBe(String(Number(u64Max)))
+    }
+    expect(op.minLifetime).toBe("0")
   })
 
   test("decodes a transfer_ownership and checksums the new owner", () => {
