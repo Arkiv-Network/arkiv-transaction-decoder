@@ -909,6 +909,15 @@ function decodeBySelector(data: Hex, options: DecodeOptions): DecodeResult | nul
   return null
 }
 
+/**
+ * A selector we decline. Counted per selector and logged on first sight, whether or not the
+ * caller told us the target.
+ *
+ * That independence is the point. arkiv-chain-indexer only calls this service for
+ * transactions already aimed at the registry (arkivOperations.ts:163) but never passes `to`,
+ * so a loud path gated on `to` is silent for the one caller in production. The counter is
+ * how a new registry selector becomes visible without that caller changing anything.
+ */
 function unknownCall(data: Hex, to: Address | null): DecodeError {
   const targetIsRegistry = to !== null && to.toLowerCase() === ARKIV_ADDRESS.toLowerCase()
   const wordAlignedTail = data.length >= 10 && (data.length - 10) % 64 === 0
@@ -918,13 +927,11 @@ function unknownCall(data: Hex, to: Address | null): DecodeError {
     )
   }
   const selector = selectorOf(data)
-  return new UnknownSelectorError(
-    selector,
-    targetIsRegistry,
-    targetIsRegistry
-      ? `Call to the Arkiv registry ${ARKIV_ADDRESS} uses selector ${selector}, which this decoder does not know. Known selectors: ${KNOWN_SELECTORS.join(", ")}`
-      : `Selector ${selector} is not an Arkiv registry call this decoder knows. Known selectors: ${KNOWN_SELECTORS.join(", ")}`,
-  )
+  const message = targetIsRegistry
+    ? `Call to the Arkiv registry ${ARKIV_ADDRESS} uses selector ${selector}, which this decoder does not know. Known selectors: ${KNOWN_SELECTORS.join(", ")}`
+    : `Selector ${selector} is not an Arkiv registry call this decoder knows. Known selectors: ${KNOWN_SELECTORS.join(", ")}`
+  recordGap({ code: "UNKNOWN_SELECTOR", message }, selector)
+  return new UnknownSelectorError(selector, targetIsRegistry, message)
 }
 
 /**

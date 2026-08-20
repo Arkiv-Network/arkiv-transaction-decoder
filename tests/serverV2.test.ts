@@ -154,6 +154,25 @@ describe("calldata anyone can send never picks the status code", () => {
     expect(body.chainId).toBe(7733102)
   })
 
+  test("an unknown selector with no `to` still reaches the operator", async () => {
+    // The one production caller sends {data, chainId} and nothing else, so a loud path
+    // gated on `to` never fires for it. The counter has to work without that field.
+    const before = await call("/api/selectors")
+    const seen = (s: { subject: string }) => s.subject === "0xc0ffee01"
+    expect(before.body.gaps.filter(seen)).toEqual([])
+
+    const { status, body } = await call("/api/decode", asIndexer(`0xc0ffee01${"00".repeat(32)}`))
+    expect(status).toBe(400)
+
+    const after = await call("/api/selectors")
+    expect(after.body.gaps.find(seen)).toEqual({ code: "UNKNOWN_SELECTOR", subject: "0xc0ffee01", count: 1 })
+
+    await call("/api/decode", asIndexer(`0xc0ffee01${"11".repeat(32)}`))
+    const twice = await call("/api/selectors")
+    expect(twice.body.gaps.find(seen).count).toBe(2)
+    expect(body.code).toBeString()
+  })
+
   test("the shape arkiv-chain-indexer parses survives an undecodable operation", async () => {
     const data = encodeExecuteV2([{ operation: 6, operationData: "0xdeadbeef" }])
     const { body } = await call("/api/decode", asIndexer(data))

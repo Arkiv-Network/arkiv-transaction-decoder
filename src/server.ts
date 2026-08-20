@@ -21,7 +21,7 @@ const USAGE = {
   endpoints: {
     "GET /api/health": "liveness check",
     "GET /api/version": "service version",
-    "GET /api/selectors": "selectors this service decodes",
+    "GET /api/selectors": "selectors this service decodes, and every decoder gap seen since start",
     "POST /api/decode": 'body: {"data": "0x..."} (execute() calldata or serialized tx), or raw hex as text/plain',
     "GET /api/decode?data=0x...": "same as POST, via query parameter",
   },
@@ -217,7 +217,9 @@ export async function handleRequest(req: Request): Promise<Response> {
   }
 
   if ((url.pathname === "/api/selectors" || url.pathname === "/selectors") && req.method === "GET") {
-    return json({ selectors: SELECTOR_INFO, maxInputBytes: MAX_INPUT_BYTES })
+    // `gaps` is the operator's channel. Decoder drift cannot travel in the status code
+    // without stopping the caller, so it is counted here and logged on first sight instead.
+    return json({ selectors: SELECTOR_INFO, maxInputBytes: MAX_INPUT_BYTES, gaps: decoderGaps() })
   }
 
   if (url.pathname === "/api/decode" || url.pathname === "/decode") {
