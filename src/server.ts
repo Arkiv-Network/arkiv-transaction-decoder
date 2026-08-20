@@ -12,8 +12,24 @@ import {
 } from "./decoder"
 import { SERVICE_NAME, SERVICE_VERSION } from "./version"
 
-/** Cap on a single decode request, matching the Rust service default. */
-export const MAX_INPUT_BYTES = Number(process.env.MAX_INPUT_BYTES ?? 2 * 1024 * 1024)
+/**
+ * Cap on a single decode request, matching the Rust service default.
+ *
+ * Number("2mb") is NaN, and every `size > NaN` is false, so a typo in the environment used
+ * to remove the cap rather than fail. A bad value now falls back and says so.
+ */
+function byteCapFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw === "") return fallback
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    console.warn(`${name}="${raw}" is not a positive integer; using the ${fallback} byte default`)
+    return fallback
+  }
+  return value
+}
+
+export const MAX_INPUT_BYTES = byteCapFromEnv("MAX_INPUT_BYTES", 2 * 1024 * 1024)
 
 const USAGE = {
   service: SERVICE_NAME,
