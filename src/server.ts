@@ -121,14 +121,17 @@ async function extractRequest(req: Request, url: URL): Promise<DecodeRequest> {
   if (!body) return { data: null, options: {} }
 
   if (contentType.includes("application/json")) {
+    // A broken body is the caller's bug, not a classification of chain traffic. Reporting
+    // it as NOT_ARKIV_CALLDATA would leave anyone counting that code to size non-Arkiv
+    // traffic also counting broken clients.
     let parsed: unknown
     try {
       parsed = JSON.parse(body)
     } catch {
-      throw new DecodeError("Request body is not valid JSON")
+      throw new RequestError(400, "BAD_REQUEST", "Request body is not valid JSON")
     }
     if (typeof parsed !== "object" || parsed === null || typeof (parsed as { data?: unknown }).data !== "string") {
-      throw new DecodeError('JSON body must have the shape {"data": "0x..."}')
+      throw new RequestError(400, "BAD_REQUEST", 'JSON body must have the shape {"data": "0x..."}')
     }
     // Unknown fields are ignored on purpose: arkiv-chain-indexer already sends chainId.
     const fields = parsed as { data: string; to?: unknown; blockNumber?: unknown; chainId?: unknown }

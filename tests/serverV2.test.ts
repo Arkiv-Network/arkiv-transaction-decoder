@@ -208,6 +208,22 @@ describe("request handling", () => {
     expect((await call("/api/decode", post({ data: "0x", blockNumber: "abc" }))).body.code).toBe("BAD_REQUEST")
   })
 
+  test("a broken body is the caller's bug, not a traffic classification", async () => {
+    // Counting NOT_ARKIV_CALLDATA to size non-Arkiv traffic must not also count clients
+    // that send bad JSON.
+    const badJson = await call("/api/decode", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not json",
+    })
+    expect(badJson.status).toBe(400)
+    expect(badJson.body.code).toBe("BAD_REQUEST")
+
+    const badShape = await call("/api/decode", post({ payload: "0x00" }))
+    expect(badShape.status).toBe(400)
+    expect(badShape.body.code).toBe("BAD_REQUEST")
+  })
+
   test("GET /api/selectors lists what this service decodes", async () => {
     const { status, body } = await call("/api/selectors")
     expect(status).toBe(200)
