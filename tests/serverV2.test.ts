@@ -190,6 +190,38 @@ describe("calldata anyone can send never picks the status code", () => {
     expect(total).toBeGreaterThanOrEqual(400)
   })
 
+  test("a genuinely new registry selector stays loud after the tally is flooded", async () => {
+    // The bug this replaces: once full, the tally refused new keys, so 256 reverted
+    // transactions bought silence for the next real selector. It produced no log line and
+    // no named entry, which is both halves of the operator's only channel.
+    const fresh = "0xabcd1234"
+    const recurring = "0xfeedface"
+    for (let i = 0; i < 6; i++) await call("/api/decode", asIndexer(`${recurring}${"00".repeat(32)}`))
+    for (let i = 0; i < 300; i++) {
+      await call("/api/decode", asIndexer(`0x${(0x20000000 + i).toString(16)}${"00".repeat(32)}`))
+    }
+
+    const lines: string[] = []
+    const warn = console.warn
+    console.warn = (line: string) => {
+      lines.push(line)
+    }
+    await call("/api/decode", asIndexer(`${fresh}${"00".repeat(32)}`))
+    console.warn = warn
+
+    const { body } = await call("/api/selectors")
+    expect(lines.filter((line) => line.includes(fresh))).toHaveLength(1)
+    expect(body.gaps.find((g: { subject: string }) => g.subject === fresh)).toEqual({
+      code: "UNKNOWN_SELECTOR",
+      subject: fresh,
+      count: 1,
+    })
+    // A selector that recurs outranks single-shot noise, so the churn never reaches it.
+    expect(body.gaps.find((g: { subject: string }) => g.subject === recurring).count).toBe(6)
+    // Still bounded: 256 named subjects plus one anonymous bucket per code.
+    expect(body.gaps.length).toBeLessThanOrEqual(264)
+  })
+
   test("the shape arkiv-chain-indexer parses survives an undecodable operation", async () => {
     const data = encodeExecuteV2([{ operation: 6, operationData: "0xdeadbeef" }])
     const { body } = await call("/api/decode", asIndexer(data))

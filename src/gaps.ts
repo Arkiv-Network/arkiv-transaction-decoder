@@ -62,8 +62,46 @@ export type DecoderGapTally = { code: DecoderGapCode; subject: string; count: nu
 
 const tallies = new Map<string, DecoderGapTally>()
 
-/** Distinct subjects worth remembering. See recordGap for why there is a limit at all. */
+/**
+ * Distinct named subjects worth remembering.
+ *
+ * A ceiling is required because the subject is attacker-chosen: anyone can send a
+ * transaction carrying a selector nobody has used before, and an uncapped map is a slow
+ * leak a stranger drives for free. The map also holds one anonymous bucket per gap code,
+ * which is never evicted, so the true bound is MAX_TALLIES plus the number of codes.
+ */
 const MAX_TALLIES = 256
+
+/**
+ * Make room by dropping the least frequent named subject, folding its count into its
+ * code's anonymous bucket so the totals stay honest.
+ *
+ * Eviction rather than refusal is what keeps the channel loud. Refusing new keys once full
+ * let anyone mute the next genuine registry selector for the price of MAX_TALLIES reverted
+ * transactions: it produced no log line and no named entry, and folded into the anonymous
+ * bucket instead. Evicting the lowest count means single-shot noise churns straight back
+ * out while a selector that recurs climbs in and stays.
+ */
+function evictLeastFrequent(): void {
+  let victimKey: string | null = null
+  let victim: DecoderGapTally | null = null
+  for (const [key, tally] of tallies) {
+    // Anonymous buckets are the floor evicted counts land in. Never evict one.
+    if (tally.subject === "") continue
+    if (victim === null || tally.count < victim.count) {
+      victimKey = key
+      victim = tally
+    }
+  }
+  if (victimKey === null || victim === null) return
+  tallies.delete(victimKey)
+  const bucket = tallies.get(victim.code)
+  if (bucket === undefined) {
+    tallies.set(victim.code, { code: victim.code, subject: "", count: victim.count })
+  } else {
+    bucket.count += victim.count
+  }
+}
 
 /**
  * The operator-facing half of a gap: a log line and a counter. Status codes cannot carry
@@ -71,22 +109,17 @@ const MAX_TALLIES = 256
  *
  * Only the first sighting of each subject logs. A chain carries a lot of ordinary foreign
  * traffic, and a line per transaction buries the one new selector that matters.
- *
- * The subject is attacker-chosen, so the map is capped: anyone can send a transaction with
- * a selector nobody has used before, and an uncapped map is a slow leak a stranger drives.
- * Past the cap a new subject folds into its code's own bucket, which keeps the count
- * honest and the memory bounded.
  */
 export function recordGap(gap: DecoderGap, subject = ""): DecoderGap {
-  const detailed = subject === "" ? gap.code : `${gap.code} ${subject}`
-  const key = tallies.has(detailed) || tallies.size < MAX_TALLIES ? detailed : gap.code
-  const tally = tallies.get(key)
-  if (tally === undefined) {
-    tallies.set(key, { code: gap.code, subject: key === detailed ? subject : "", count: 1 })
-    console.warn(`[decoder-gap] ${key}: ${gap.message}`)
-  } else {
-    tally.count += 1
+  const key = subject === "" ? gap.code : `${gap.code} ${subject}`
+  const seen = tallies.get(key)
+  if (seen !== undefined) {
+    seen.count += 1
+    return gap
   }
+  if (tallies.size >= MAX_TALLIES) evictLeastFrequent()
+  tallies.set(key, { code: gap.code, subject, count: 1 })
+  console.warn(`[decoder-gap] ${key}: ${gap.message}`)
   return gap
 }
 
