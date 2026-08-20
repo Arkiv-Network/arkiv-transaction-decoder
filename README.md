@@ -74,8 +74,8 @@ Unchanged. Existing callers keep the same responses they had before.
 
 ### Upstream source of truth
 
-The ABI mirrored in `src/abi.ts` is a copy. Its source of truth is **Arkiv-Network/arkiv,
-`crates/arkiv-bindings/src/lib.rs`**.
+The ABIs mirrored in `src/abi.ts` are copies. Their source of truth is
+**Arkiv-Network/arkiv, `crates/arkiv-bindings/src/lib.rs`**.
 
 `tests/selectors.test.ts` recomputes each selector from its signature string and asserts
 the pinned hex, mirroring that crate's `selectors_are_pinned` test. It checks two
@@ -83,6 +83,13 @@ independent paths: the signature strings must hash to the pinned bytes, and the 
 object this service decodes with must produce the same selector. Editing a struct fails
 the second, editing a pin fails the first. An upstream change fails the build here
 instead of turning into a silent 400 in production.
+
+A pinned selector cannot catch the drift most likely to happen. The tagged union exists so
+new operation types ship without touching the `execute` signature, and `operationData` is
+opaque bytes, so a field added to `Create` moves no selector and every pin still passes.
+`tests/fixtures/cheesecake.json` catches that, and `tests/fixtures/operation-vectors.json`
+backs it up: one frozen `operationData` per tag, captured once, so a struct that grew a
+field fails even after the cheesecake fixture is regenerated against a newer chain.
 
 ## Three things the calldata cannot tell you
 
@@ -188,7 +195,7 @@ Response:
       "expiresAt": "0",
       "minLifetime": "30",
       "resolvedExpiresAt": "222528",
-      "expiresAtBlocks": 222528,
+      "expiresAtBlocks": "222528",
       "newOwner": null
     }
   ]
@@ -197,10 +204,16 @@ Response:
 
 Notes:
 
-- `salt`, `expiresAt`, `minLifetime` and `resolvedExpiresAt` are decimal strings. A
-  `uint128` salt does not fit a JS number.
+- `salt`, `expiresAt`, `minLifetime`, `resolvedExpiresAt` and `expiresAtBlocks` are
+  decimal strings. A `uint128` salt does not fit a JS number, and neither does a `uint64`
+  expiry: the executor writes `expiresAt = u64::MAX` for a permanent entity, which
+  `Number()` renders as 18446744073709552000, wrong by 385 and past the `int8` ceiling of
+  the column the indexer stores it in.
 - `expiresAtBlocks` is a compatibility field for arkiv-chain-indexer: the resolved block
   when `blockNumber` was supplied, otherwise the raw `expiresAt`.
+- `undecodable` marks calldata this decoder recognised but could not read. On an operation
+  it means that one operation; on the response it means the argument block itself, and
+  there are no operations. See "Decoder gaps" below.
 - `payload.hex` is omitted and `payload.truncated` is set above 8 KiB. A batch of 100 KiB
   payloads would otherwise be a multi-megabyte response, and the size is the part callers
   use. The legacy ABI path is unchanged and always includes the hex.
@@ -213,38 +226,64 @@ Notes:
 
 ### Error codes
 
-The status code is the contract. arkiv-chain-indexer treats `400` as "not an Arkiv call"
-and skips the transaction without logging anything; every other status throws and
-surfaces. So `400` is reserved for calldata that genuinely is not ours, and anything the
-decoder should have understood but did not is answered loudly.
+Calldata reaches this service from a public chain, so its bytes belong to whoever sent the
+transaction. They never choose the status code.
+
+arkiv-chain-indexer maps `400` to "not an Arkiv call, skip it" and throws on every other
+status, and its caller then retries the same block forever with no cap. So a stranger who
+can make this service answer `422` or `501` can stop the indexer for good, and the
+transaction that does it need not even succeed on chain: a reverted transaction is still
+in the block.
+
+Hence exactly two answers to calldata, and everything else is a fault in the request:
 
 | status | `code` | meaning | caller should |
 |--------|--------|---------|---------------|
-| 400 | `NOT_ARKIV_CALLDATA` | not a contract call we recognise | skip |
-| 400 | `UNKNOWN_SELECTOR` | unknown selector, target not known to be the registry | skip, but the body names the selector |
-| 400 | `BAD_REQUEST` | missing `data`, or a malformed `to` / `blockNumber` / `chainId` | fix the request |
+| 200 | (see `undecodable`) | ours, but we could not read it | record the row |
+| 400 | `NOT_ARKIV_CALLDATA` | not a contract call we recognise, or a selector we do not know on a call whose target we cannot confirm | skip |
+| 400 | `UNKNOWN_SELECTOR` | a selector we do not know on a call to the registry itself | skip; this decoder has a gap |
+| 400 | `BAD_REQUEST` | invalid JSON, missing `data`, or a malformed `to` / `blockNumber` / `chainId` | fix the request |
+| 405 | `METHOD_NOT_ALLOWED` | not GET or POST | fix the request |
 | 413 | `INPUT_TOO_LARGE` | body above `MAX_INPUT_BYTES` | split the request |
-| 422 | `MALFORMED_CALLDATA` | known selector, argument block does not decode | alert: the ABI copy is wrong |
-| 422 | `MALFORMED_OPERATION_DATA` | known operation tag, `operationData` does not match the struct | alert: the ABI copy is wrong |
-| 422 | `UNKNOWN_OPERATION_TAG` | operation tag outside 1..5 | alert: the protocol added an operation |
-| 501 | `UNKNOWN_SELECTOR` | unknown selector on a call to the registry itself | alert: this decoder has a gap |
 | 500 | `INTERNAL_ERROR` | bug | alert |
 
-Every error body carries `error` (a sentence) and `code` (stable). An unknown selector
-also carries `selector` and `knownSelectors`.
+Every error body carries `error` (a sentence) and `code` (stable). A declined selector also
+carries `selector`, `targetIsRegistry` and `knownSelectors`.
 
-Two deliberate calls worth knowing about:
+Only the target separates a decoder gap from ordinary foreign traffic. Shape does not:
+every well-formed EVM call is word-aligned, so a plain ERC20 transfer looks exactly like a
+registry call whose selector we are missing.
 
-- **An unknown operation tag stops the caller.** The tagged union exists so new operation
-  types can ship without changing the `execute` signature, so this will fire one day and
-  it will block indexing until this decoder is updated. That is the point: the whole
-  reason this rewrite exists is a failure nobody noticed. If uptime matters more than
-  alerting for your deployment, change `UnknownOperationTagError` to a warning and a
-  `200`. The legacy ABI path already does that, reporting `unknown(N)`.
-- **An unfamiliar attribute type does not.** The type set is an open enum the protocol may
-  extend. That attribute is recorded with `valueTypeName: "unknown"` and the raw hex, and
-  decoding continues. Halting an indexer over one unfamiliar value is worse than recording
-  it.
+### Decoder gaps
+
+Calldata we recognise as registry traffic but cannot fully decode is reported in the body
+at `200` with a machine-readable marker, so the caller records what it saw and keeps going.
+
+| `undecodable.code` | where | meaning |
+|--------------------|-------|---------|
+| `MALFORMED_CALLDATA` | response | the `execute` selector is ours, the argument block does not decode; `operations` is empty |
+| `UNKNOWN_OPERATION_TAG` | operation | tag outside 1..5, so the protocol added an operation |
+| `MALFORMED_OPERATION_DATA` | operation | the tag is known, `operationData` does not match the struct |
+
+An undecodable operation keeps its raw `operationType` and takes the legacy `unknown(N)`
+name, never the name its tag claims: a struct we could not parse is not evidence that the
+operation it names happened, and a metrics pipeline must not count it as one. Every other
+field is at its empty value, so the row still has the shape a caller parses.
+
+The loud half of a gap is a log line and a counter, not a status:
+
+```
+[decoder-gap] UNKNOWN_OPERATION_TAG: Operation 0 has tag 6, which this decoder does not know (expected 1..5)
+```
+
+Each distinct gap logs once, then only counts. `GET /api/selectors` serves the tally. A
+selector we decline is counted there too, whether or not the caller passed `to`, because
+arkiv-chain-indexer only calls this service for transactions already aimed at the registry
+but never says so: a loud path gated on `to` is silent for the one caller in production.
+
+An unfamiliar **attribute type** is not a gap. The type set is an open enum the protocol may
+extend, so the attribute is recorded with `valueTypeName: "unknown"` and its raw hex and
+decoding continues. Halting over one unfamiliar value is worse than recording it.
 
 ### `GET /api/selectors`
 
@@ -256,9 +295,17 @@ logs.
   "selectors": [
     { "selector": "0x49650044", "signature": "execute((uint8,bytes)[])", "abi": "v2", "decodes": true }
   ],
-  "maxInputBytes": 2097152
+  "maxInputBytes": 2097152,
+  "gaps": [
+    { "code": "UNKNOWN_SELECTOR", "subject": "0xa9059cbb", "count": 12043 },
+    { "code": "UNKNOWN_OPERATION_TAG", "subject": "", "count": 2 }
+  ]
 }
 ```
+
+`gaps` counts every decoder gap since start, most frequent first, and it is how drift
+becomes visible without the caller changing anything. A new registry selector appears as a
+rising count next to the ordinary foreign traffic.
 
 ### `GET /api/health`
 
@@ -277,6 +324,18 @@ bun run dev        # auto-reloading server
 ```
 
 CI (GitHub Actions) runs typecheck + tests on every push and pull request.
+
+Layout:
+
+| file | holds |
+|------|-------|
+| `src/abi.ts` | both registry ABIs, both selectors, the protocol constants |
+| `src/bytes.ts` | byte and word helpers both generations share |
+| `src/gaps.ts` | the one error class, the decoder-gap record and its counter |
+| `src/decodeLegacy.ts` | generation-1 decoding |
+| `src/decodeV2.ts` | generation-2 decoding |
+| `src/decoder.ts` | selector dispatch, and the single import path for callers |
+| `src/server.ts` | HTTP surface and the status-code contract |
 
 `tests/fixtures/cheesecake.json` holds five real cheesecake transactions with their
 receipt logs. The calldata and the logs are independent encodings of the same operations,
