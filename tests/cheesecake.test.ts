@@ -11,6 +11,9 @@ import fixtures from "./fixtures/cheesecake.json"
  * disagrees here even when it returns plausible JSON.
  */
 
+// transfer_ownership is mapped for completeness but no fixture exercises it: the cheesecake
+// probes never transferred an entity, so tag 4 is covered only by the synthetic vectors in
+// tests/decoderV2.test.ts.
 const EVENT_FOR_OPERATION: Record<string, string> = {
   create: EVENT_TOPICS["EntityCreated(bytes32,address,uint64,uint8)"],
   patch: EVENT_TOPICS["EntityPatched(bytes32,address)"],

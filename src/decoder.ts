@@ -264,7 +264,7 @@ export type DecodedTransaction = {
   functionName: "execute"
   abi?: "legacy"
   selector?: Hex
-  /** present when a full serialized transaction (not bare calldata) was supplied */
+  /** the call target when known: read from a serialized transaction, or given by the caller */
   to?: Address | null
   /** set when `to` is present and differs from the known Arkiv registry address */
   warning?: string
@@ -1023,6 +1023,16 @@ function unknownCall(data: Hex, to: Address | null): DecodeError {
   return new UnknownSelectorError(selector, targetIsRegistry, message)
 }
 
+/** A target the caller gave us is worth the same warning as one we read off a transaction. */
+function withTarget(decoded: DecodeResult, to: Address | null): DecodeResult {
+  if (to === null) return decoded
+  decoded.to = to
+  if (to.toLowerCase() !== ARKIV_ADDRESS.toLowerCase()) {
+    decoded.warning = `Transaction target ${to} is not the known Arkiv registry ${ARKIV_ADDRESS}`
+  }
+  return decoded
+}
+
 /**
  * Decode either bare `execute(...)` calldata (either ABI generation) or a full
  * RLP-serialized transaction (signed or unsigned) whose data is an Arkiv registry call.
@@ -1034,7 +1044,7 @@ export function decodeArkivTransaction(input: string, options: DecodeOptions = {
   }
 
   const direct = decodeBySelector(trimmed, options)
-  if (direct) return direct
+  if (direct) return withTarget(direct, options.to ?? null)
 
   // Not raw calldata, so try interpreting it as a serialized transaction.
   let tx
@@ -1052,10 +1062,5 @@ export function decodeArkivTransaction(input: string, options: DecodeOptions = {
 
   const decoded = decodeBySelector(tx.data, { ...options, to })
   if (!decoded) throw unknownCall(tx.data, to)
-
-  decoded.to = to
-  if (to && to.toLowerCase() !== ARKIV_ADDRESS.toLowerCase()) {
-    decoded.warning = `Transaction target ${to} is not the known Arkiv registry ${ARKIV_ADDRESS}`
-  }
-  return decoded
+  return withTarget(decoded, to)
 }

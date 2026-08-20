@@ -348,6 +348,19 @@ describe("selector dispatch", () => {
     expect(result.operations[0]!.operation).toBe("delete")
   })
 
+  test("bare calldata warns about a foreign target the caller named", () => {
+    // The serialized path warned and the bare path did not, though the caller is telling us
+    // the same thing either way.
+    const data = encodeExecuteV2([deleteOpV2(ENTITY_KEY)])
+    const elsewhere = decodeArkivTransaction(data, { to: NEW_OWNER })
+    expect(elsewhere.to).toBe(NEW_OWNER)
+    expect(elsewhere.warning).toContain("is not the known Arkiv registry")
+
+    const registry = decodeArkivTransaction(data, { to: ARKIV_ADDRESS })
+    expect(registry.warning).toBeUndefined()
+    expect(decodeArkivTransaction(data).to).toBeUndefined()
+  })
+
   test("reports a registry read-only call as a call with no operations", () => {
     const result = decodeArkivTransaction(`0x36917bfd${"00".repeat(32)}`) as DecodedViewCall
     expect(result.functionName).toBe("entityNonce")
