@@ -143,7 +143,6 @@ export {
 } from "./abi"
 export { decodeIdent32 } from "./bytes"
 export {
-  DECODER_GAP_CODES,
   type DecoderGap,
   type DecoderGapCode,
   type DecoderGapTally,
@@ -151,7 +150,6 @@ export {
   UnknownSelectorError,
   decoderGaps,
   recordGap,
-  resetDecoderGaps,
 } from "./gaps"
 export {
   BLOCK_TIME,

@@ -46,14 +46,11 @@ export class UnknownSelectorError extends DecodeError {
  * same block forever. So the gap travels in the body at 200, the caller records a row, and
  * the operator reads the log and the counter.
  */
-export const DECODER_GAP_CODES = {
-  UNKNOWN_SELECTOR: "UNKNOWN_SELECTOR",
-  MALFORMED_CALLDATA: "MALFORMED_CALLDATA",
-  MALFORMED_OPERATION_DATA: "MALFORMED_OPERATION_DATA",
-  UNKNOWN_OPERATION_TAG: "UNKNOWN_OPERATION_TAG",
-} as const
-
-export type DecoderGapCode = keyof typeof DECODER_GAP_CODES
+export type DecoderGapCode =
+  | "UNKNOWN_SELECTOR"
+  | "MALFORMED_CALLDATA"
+  | "MALFORMED_OPERATION_DATA"
+  | "UNKNOWN_OPERATION_TAG"
 
 /** The machine-readable marker a caller stores instead of stopping. */
 export type DecoderGap = {
@@ -65,18 +62,27 @@ export type DecoderGapTally = { code: DecoderGapCode; subject: string; count: nu
 
 const tallies = new Map<string, DecoderGapTally>()
 
+/** Distinct subjects worth remembering. See recordGap for why there is a limit at all. */
+const MAX_TALLIES = 256
+
 /**
  * The operator-facing half of a gap: a log line and a counter. Status codes cannot carry
  * this, because the caller that would see the status is the one we must not stop.
  *
- * Only the first occurrence of each (code, subject) logs. A chain carries a lot of ordinary
- * foreign traffic, and a line per transaction buries the one new selector that matters.
+ * Only the first sighting of each subject logs. A chain carries a lot of ordinary foreign
+ * traffic, and a line per transaction buries the one new selector that matters.
+ *
+ * The subject is attacker-chosen, so the map is capped: anyone can send a transaction with
+ * a selector nobody has used before, and an uncapped map is a slow leak a stranger drives.
+ * Past the cap a new subject folds into its code's own bucket, which keeps the count
+ * honest and the memory bounded.
  */
 export function recordGap(gap: DecoderGap, subject = ""): DecoderGap {
-  const key = subject === "" ? gap.code : `${gap.code} ${subject}`
+  const detailed = subject === "" ? gap.code : `${gap.code} ${subject}`
+  const key = tallies.has(detailed) || tallies.size < MAX_TALLIES ? detailed : gap.code
   const tally = tallies.get(key)
   if (tally === undefined) {
-    tallies.set(key, { code: gap.code, subject, count: 1 })
+    tallies.set(key, { code: gap.code, subject: key === detailed ? subject : "", count: 1 })
     console.warn(`[decoder-gap] ${key}: ${gap.message}`)
   } else {
     tally.count += 1
@@ -87,8 +93,4 @@ export function recordGap(gap: DecoderGap, subject = ""): DecoderGap {
 /** Every gap seen since start, most frequent first. Served by GET /api/selectors. */
 export function decoderGaps(): DecoderGapTally[] {
   return [...tallies.values()].sort((a, b) => b.count - a.count)
-}
-
-export function resetDecoderGaps(): void {
-  tallies.clear()
 }

@@ -176,6 +176,20 @@ describe("calldata anyone can send never picks the status code", () => {
     expect(body.code).toBeString()
   })
 
+  test("the gap tally is capped, since the subject is attacker-chosen", async () => {
+    // Anyone can send a transaction with a selector nobody has used before.
+    for (let i = 0; i < 400; i++) {
+      await call("/api/decode", asIndexer(`0x${(0x10000000 + i).toString(16)}${"00".repeat(32)}`))
+    }
+    const { body } = await call("/api/selectors")
+    expect(body.gaps.length).toBeLessThanOrEqual(260)
+    // Nothing is lost: the overflow lands in the code's own bucket.
+    const total = body.gaps
+      .filter((g: { code: string }) => g.code === "UNKNOWN_SELECTOR")
+      .reduce((sum: number, g: { count: number }) => sum + g.count, 0)
+    expect(total).toBeGreaterThanOrEqual(400)
+  })
+
   test("the shape arkiv-chain-indexer parses survives an undecodable operation", async () => {
     const data = encodeExecuteV2([{ operation: 6, operationData: "0xdeadbeef" }])
     const { body } = await call("/api/decode", asIndexer(data))
