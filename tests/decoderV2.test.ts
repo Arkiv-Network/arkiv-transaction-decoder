@@ -220,6 +220,48 @@ describe("attribute values", () => {
   })
 })
 
+describe("shapes the chain refuses are warned about, not passed off as valid", () => {
+  // The decoder already states the principle: accepting something here would report what
+  // the chain would have refused. These four got past it.
+  function warningsFor(op: ReturnType<typeof patchOpV2>): string {
+    return decodeCalldataV2(encodeExecuteV2([op])).warnings?.join(" | ") ?? ""
+  }
+
+  test("a str above the 128 byte limit is flagged", () => {
+    expect(warningsFor(patchOpV2(ENTITY_KEY, [attr.str("long", "a".repeat(200))]))).toContain(
+      "is 200 bytes, above the 128 byte protocol limit",
+    )
+    expect(warningsFor(patchOpV2(ENTITY_KEY, [attr.str("ok", "a".repeat(128))]))).toBe("")
+  })
+
+  test("a patch gets the attribute count check a create already had", () => {
+    const many = Array.from({ length: 40 }, (_, i) => attr.i32(`a${String(i).padStart(2, "0")}`, i))
+    expect(warningsFor(patchOpV2(ENTITY_KEY, many))).toContain("40 attributes, above the 32 attribute protocol limit")
+    const create = decodeCalldataV2(encodeExecuteV2([createOpV2({ attributes: many })]))
+    expect(create.warnings?.join(" ")).toContain("40 attributes, above the 32 attribute protocol limit")
+  })
+
+  test("unsorted and duplicate attribute names are flagged", () => {
+    expect(warningsFor(patchOpV2(ENTITY_KEY, [attr.i32("b", 1), attr.i32("a", 2)]))).toContain(
+      "AttributesNotSorted",
+    )
+    expect(warningsFor(patchOpV2(ENTITY_KEY, [attr.i32("a", 1), attr.i32("a", 2)]))).toContain(
+      "appears more than once",
+    )
+    expect(warningsFor(patchOpV2(ENTITY_KEY, [attr.i32("a", 1), attr.i32("b", 2)]))).toBe("")
+  })
+
+  test("a second $payload does not silently rewrite the size the pipeline stores", () => {
+    const op = patchOpV2(ENTITY_KEY, [
+      attr.bytes("$payload", new Uint8Array(4)),
+      attr.bytes("$payload", new Uint8Array(9)),
+    ])
+    const result = decodeCalldataV2(encodeExecuteV2([op]))
+    expect(result.operations[0]!.payload.size).toBe(9)
+    expect(result.warnings?.join(" ")).toContain("$payload appears more than once")
+  })
+})
+
 describe("undecodable calldata is recorded, never thrown", () => {
   // Anyone can send these bytes to the registry. The node reverts the transaction, but it
   // stays in the block and the indexer must still get past it, so none of them may throw.

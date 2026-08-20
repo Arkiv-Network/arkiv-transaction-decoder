@@ -27,7 +27,9 @@ import {
   EXECUTE_V2_ABI,
   EXECUTE_V2_SELECTOR,
   EXTEND_EXPIRY_PARAMS,
+  MAX_ATTRIBUTES,
   MAX_PAYLOAD_BYTES,
+  MAX_STR_BYTES,
   OPERATION_NAMES_V2,
   PATCH_PARAMS,
   PAYLOAD_ATTRIBUTE,
@@ -681,8 +683,47 @@ function checkCanonical(params: OperationParams, decoded: unknown, original: Hex
   }
 }
 
+/**
+ * Rules the executor enforces that this decoder can still parse past. Warnings, never
+ * failures: the transaction sits in the block either way and the caller has to record it.
+ * Saying nothing would describe an entity the chain refused as though it existed.
+ */
+function checkAttributeRules(raw: readonly RawAttribute[], index: number, warnings: string[]): void {
+  if (raw.length > MAX_ATTRIBUTES) {
+    warnings.push(`operation ${index}: ${raw.length} attributes, above the ${MAX_ATTRIBUTES} attribute protocol limit`)
+  }
+  let previous: RawAttribute | undefined
+  for (const attr of raw) {
+    if (attr.typeId === ArkivAttributeType.Str) {
+      const size = hexToBytes(attr.value).length
+      if (size > MAX_STR_BYTES) {
+        warnings.push(
+          `operation ${index}: str attribute ${decodeIdent32(attr.name)} is ${size} bytes, above the ${MAX_STR_BYTES} byte protocol limit`,
+        )
+      }
+    }
+    if (previous !== undefined) {
+      // Ident32 is left-aligned and null-padded, so reading the two words as big-endian
+      // integers gives the byte order the chain sorts on.
+      const order = BigInt(previous.name) - BigInt(attr.name)
+      if (order === 0n) {
+        warnings.push(
+          `operation ${index}: attribute ${decodeIdent32(attr.name)} appears more than once, which the chain rejects`,
+        )
+      } else if (order > 0n) {
+        warnings.push(
+          `operation ${index}: attribute ${decodeIdent32(attr.name)} follows ${decodeIdent32(previous.name)}, so the chain rejects this with AttributesNotSorted`,
+        )
+      }
+    }
+    previous = attr
+  }
+}
+
 function splitAttributes(
   raw: readonly RawAttribute[],
+  index: number,
+  warnings: string[],
 ): { user: RawAttribute[]; payload?: RawAttribute; contentType?: RawAttribute; systemNames: string[] } {
   const user: RawAttribute[] = []
   const systemNames: string[] = []
@@ -691,9 +732,22 @@ function splitAttributes(
   for (const attr of raw) {
     const key = decodeIdent32(attr.name)
     if (key === PAYLOAD_ATTRIBUTE) {
+      // Last one wins, as it would in any map built from this list. Worth saying out loud:
+      // payload.size is the number the metrics pipeline stores, so a silent overwrite
+      // records the wrong size for the entity.
+      if (payload !== undefined) {
+        warnings.push(
+          `operation ${index}: ${PAYLOAD_ATTRIBUTE} appears more than once; payload.size reports the last one`,
+        )
+      }
       payload = attr
       systemNames.push(key)
     } else if (key === CONTENT_TYPE_ATTRIBUTE) {
+      if (contentType !== undefined) {
+        warnings.push(
+          `operation ${index}: ${CONTENT_TYPE_ATTRIBUTE} appears more than once; contentType reports the last one`,
+        )
+      }
       contentType = attr
       systemNames.push(key)
     } else {
@@ -811,13 +865,11 @@ export function decodeOperationV2(
         creationFlags: number
         attributes: readonly RawAttribute[]
       }
-      const split = splitAttributes(create.attributes)
+      const split = splitAttributes(create.attributes, index, warnings)
       if (create.creationFlags & ~CREATION_FLAGS_MASK) {
         warnings.push(`operation ${index}: creationFlags ${create.creationFlags} sets bits outside the known mask`)
       }
-      if (create.attributes.length > 32) {
-        warnings.push(`operation ${index}: ${create.attributes.length} attributes, above the 32 attribute protocol limit`)
-      }
+      checkAttributeRules(create.attributes, index, warnings)
       return {
         ...common,
         // Create carries a salt, not a key: the entity key is derived on chain from the
@@ -835,7 +887,9 @@ export function decodeOperationV2(
     }
     case ArkivOperationTag.Patch: {
       const patch = decoded as { entityKey: Hex; mutations: readonly RawAttribute[] }
-      const split = splitAttributes(patch.mutations)
+      const split = splitAttributes(patch.mutations, index, warnings)
+      // A patch carries the same attribute rules as a create; only the create was checked.
+      checkAttributeRules(patch.mutations, index, warnings)
       return {
         ...common,
         entityKey: patch.entityKey,
