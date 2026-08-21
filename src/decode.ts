@@ -1,4 +1,4 @@
-/** Generation-2 decoding: the tagged union behind `execute((uint8,bytes)[])`. */
+/** Decoding the tagged union behind `execute((uint8,bytes)[])`. */
 import {
   type Address,
   type Hex,
@@ -22,13 +22,13 @@ import {
   CREATION_FLAG_READONLY,
   DECIMAL_SCALE,
   DELETE_PARAMS,
-  EXECUTE_V2_ABI,
-  EXECUTE_V2_SELECTOR,
+  EXECUTE_ABI,
+  EXECUTE_SELECTOR,
   EXTEND_EXPIRY_PARAMS,
   MAX_ATTRIBUTES,
   MAX_PAYLOAD_BYTES,
   MAX_STR_BYTES,
-  OPERATION_NAMES_V2,
+  OPERATION_NAMES,
   PATCH_PARAMS,
   PAYLOAD_ATTRIBUTE,
   TRANSFER_OWNERSHIP_PARAMS,
@@ -40,7 +40,7 @@ import { type DecoderGap, type DecoderGapCode, recordGap } from "./gaps"
 
 class ValueDecodeError extends Error {}
 
-export type DecodedAttributeV2 = {
+export type DecodedAttribute = {
   key: string
   valueType: number
   valueTypeName: ArkivAttributeTypeName | "unknown" | "invalid"
@@ -64,10 +64,10 @@ export type DecodedPayload = {
   truncated?: true
 }
 
-/** Mirrors the legacy path's `unknown(N)`: a tag we read but cannot act on. */
+/** A tag we read but cannot act on. */
 export type UnknownOperationName = `unknown(${number})`
 
-export type DecodedOperationV2 = {
+export type DecodedOperation = {
   index: number
   operationType: number
   operation: ArkivOperationName | UnknownOperationName
@@ -82,7 +82,7 @@ export type DecodedOperationV2 = {
   contentType: string | null
   payload: DecodedPayload
   /** user attributes only: $payload and $contentType are lifted into their own fields */
-  attributes: DecodedAttributeV2[]
+  attributes: DecodedAttribute[]
   /** names of the system attributes lifted out, so nothing is dropped silently */
   systemAttributes: string[]
   /** raw attribute count from the calldata, including the lifted system ones */
@@ -109,9 +109,8 @@ export type DecodedOperationV2 = {
   newOwner: Address | null
 }
 
-export type DecodedTransactionV2 = {
+export type DecodedTransaction = {
   functionName: "execute"
-  abi: "v2"
   selector: Hex
   /** set when the argument block itself did not decode, so there are no operations to report */
   undecodable?: DecoderGap
@@ -121,13 +120,12 @@ export type DecodedTransactionV2 = {
   /** non-fatal notes: unknown attribute types, non-canonical encodings, oversize values */
   warnings?: string[]
   operationCount: number
-  operations: DecodedOperationV2[]
+  operations: DecodedOperation[]
 }
 
 /** A registry read-only call. Recognised, carries no operations. */
 export type DecodedViewCall = {
   functionName: ArkivViewFunctionName
-  abi: "v2"
   selector: Hex
   to?: Address | null
   warning?: string
@@ -147,7 +145,7 @@ export type DecodeOptions = {
 
 export const DEFAULT_PAYLOAD_HEX_LIMIT = 8192
 
-const OPERATION_NAME_BY_TAG: Record<number, ArkivOperationName | undefined> = OPERATION_NAMES_V2
+const OPERATION_NAME_BY_TAG: Record<number, ArkivOperationName | undefined> = OPERATION_NAMES
 const ATTRIBUTE_TYPE_NAME_BY_ID: Record<number, ArkivAttributeTypeName | undefined> = ATTRIBUTE_TYPE_NAMES
 
 /**
@@ -262,10 +260,10 @@ function renderValue(typeId: number, bytes: Uint8Array, raw: Hex, hexLimit: numb
   }
 }
 
-export function decodeAttributeV2(
+export function decodeAttribute(
   attr: { name: Hex; typeId: number; value: Hex },
   hexLimit: number = DEFAULT_PAYLOAD_HEX_LIMIT,
-): DecodedAttributeV2 {
+): DecodedAttribute {
   const key = decodeIdent32(attr.name)
   const bytes = hexToBytes(attr.value)
   const base = { key, valueType: attr.typeId, sizeBytes: bytes.length }
@@ -449,7 +447,7 @@ function expiryFields(
   blockNumber: bigint | null,
   index: number,
   warnings: string[],
-): Pick<DecodedOperationV2, "expiresAt" | "minLifetime" | "resolvedExpiresAt" | "expiresAtBlocks"> {
+): Pick<DecodedOperation, "expiresAt" | "minLifetime" | "resolvedExpiresAt" | "expiresAtBlocks"> {
   const resolved = blockNumber === null ? null : resolveExpiry(expiresAt, minLifetime, blockNumber)
   // Two expiries the executor refuses outright, so a decode that reports them without a
   // word describes an entity the chain never created.
@@ -476,7 +474,7 @@ function expiryFields(
  * Every field a caller needs, at its empty value. An operation the decoder cannot read is
  * still returned in this shape, so a batch of five with one bad tag reports five rows.
  */
-function blankOperation(index: number, tag: number): DecodedOperationV2 {
+function blankOperation(index: number, tag: number): DecodedOperation {
   return {
     index,
     operationType: tag,
@@ -499,20 +497,20 @@ function blankOperation(index: number, tag: number): DecodedOperationV2 {
 }
 
 /**
- * The operation keeps the raw tag and the legacy `unknown(N)` name, never the name the tag
+ * The operation keeps the raw tag and an `unknown(N)` name, never the name the tag
  * claims: a struct we could not parse is not evidence that the operation it names happened,
  * and a metrics pipeline must not count it as one.
  */
-function undecodableOperation(index: number, tag: number, code: DecoderGapCode, message: string): DecodedOperationV2 {
+function undecodableOperation(index: number, tag: number, code: DecoderGapCode, message: string): DecodedOperation {
   return { ...blankOperation(index, tag), undecodable: recordGap({ code, message }) }
 }
 
-export function decodeOperationV2(
+export function decodeOperation(
   op: { operation: number; operationData: Hex },
   index: number,
   options: { blockNumber: bigint | null; payloadHexLimit: number },
   warnings: string[],
-): DecodedOperationV2 {
+): DecodedOperation {
   const tag = op.operation
   const name = OPERATION_NAME_BY_TAG[tag]
   const params = OPERATION_PARAMS[tag]
@@ -565,7 +563,7 @@ export function decodeOperationV2(
         creationFlagNames: creationFlagNames(create.creationFlags),
         contentType: shapeContentType(split.contentType, warnings),
         payload: shapePayload(split.payload, options.payloadHexLimit, warnings),
-        attributes: split.user.map((a) => decodeAttributeV2(a, options.payloadHexLimit)),
+        attributes: split.user.map((a) => decodeAttribute(a, options.payloadHexLimit)),
         systemAttributes: split.systemNames,
         attributeCount: create.attributes.length,
         ...expiryFields(create.expiresAt, create.minLifetime, options.blockNumber, index, warnings),
@@ -581,7 +579,7 @@ export function decodeOperationV2(
         entityKey: patch.entityKey,
         contentType: shapeContentType(split.contentType, warnings),
         payload: shapePayload(split.payload, options.payloadHexLimit, warnings),
-        attributes: split.user.map((a) => decodeAttributeV2(a, options.payloadHexLimit)),
+        attributes: split.user.map((a) => decodeAttribute(a, options.payloadHexLimit)),
         systemAttributes: split.systemNames,
         attributeCount: patch.mutations.length,
       }
@@ -605,21 +603,20 @@ export function decodeOperationV2(
   }
 }
 
-/** Decode generation-2 `execute((uint8,bytes)[])` calldata. */
-export function decodeCalldataV2(data: Hex, options: DecodeOptions = {}): DecodedTransactionV2 {
+/** Decode `execute((uint8,bytes)[])` calldata. */
+export function decodeCalldata(data: Hex, options: DecodeOptions = {}): DecodedTransaction {
   let args
   try {
-    ;({ args } = decodeFunctionData({ abi: EXECUTE_V2_ABI, data }))
+    ;({ args } = decodeFunctionData({ abi: EXECUTE_ABI, data }))
   } catch (e) {
     // The selector is ours, so this is registry traffic and the caller must record it.
     // There are no operations to report, which is exactly what an empty batch looks like.
     return {
       functionName: "execute",
-      abi: "v2",
-      selector: EXECUTE_V2_SELECTOR,
+      selector: EXECUTE_SELECTOR,
       undecodable: recordGap({
         code: "MALFORMED_CALLDATA",
-        message: `Calldata carries the Arkiv execute() selector ${EXECUTE_V2_SELECTOR} but the argument block does not decode: ${
+        message: `Calldata carries the Arkiv execute() selector ${EXECUTE_SELECTOR} but the argument block does not decode: ${
           e instanceof Error ? e.message : String(e)
         }`,
       }),
@@ -634,13 +631,12 @@ export function decodeCalldataV2(data: Hex, options: DecodeOptions = {}): Decode
     payloadHexLimit: options.payloadHexLimit ?? DEFAULT_PAYLOAD_HEX_LIMIT,
   }
   const operations = args[0].map((op, index) =>
-    decodeOperationV2({ operation: op.operation, operationData: op.operationData }, index, opOptions, warnings),
+    decodeOperation({ operation: op.operation, operationData: op.operationData }, index, opOptions, warnings),
   )
 
   return {
     functionName: "execute",
-    abi: "v2",
-    selector: EXECUTE_V2_SELECTOR,
+    selector: EXECUTE_SELECTOR,
     operationCount: operations.length,
     operations,
     ...(warnings.length > 0 ? { warnings } : {}),

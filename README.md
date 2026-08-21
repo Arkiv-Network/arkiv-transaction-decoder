@@ -6,15 +6,10 @@ back into readable Arkiv operations.
 It accepts either bare `execute()` calldata or a full RLP-serialized transaction (signed
 or unsigned, legacy/2930/1559) and returns the decoded operations as JSON.
 
-## Two ABI generations
+## The registry ABI
 
-The registry contract (`0x4400000000000000000000000000000000000044`) has two encodings in
-the wild. This service decodes both and picks one by selector.
-
-### Generation 2, selector `0x49650044`
-
-Live on the cheesecake devnet. Operations are a tagged union: a tag plus an
-`abi.encode`d struct.
+The registry contract (`0x4400000000000000000000000000000000000044`) speaks one encoding,
+selector `0x49650044`. Operations are a tagged union: a tag plus an `abi.encode`d struct.
 
 ```solidity
 struct Attribute { Ident32 name; uint8 typeId; bytes value; }
@@ -56,25 +51,27 @@ Word types must be exactly 32 bytes with canonical padding. The chain rejects an
 else, so this decoder marks it `invalid` rather than reporting a value the chain would
 have refused.
 
-### Generation 1 (legacy), selector `0xba8ccf92`
+### The retired generation, selector `0xba8ccf92`
 
-```solidity
-function execute((
-  uint8 operationType,
-  bytes32 entityKey,
-  bytes payload,
-  (bytes32[4] data) contentType,            // Mime128
-  (bytes32 name, uint8 valueType, bytes32[4] value)[] attributes,
-  uint32 expiresAt,                          // block-denominated
-  address newOwner
-)[] ops) external
-```
+An earlier registry ABI packed each operation into one flat struct
+(`execute((uint8,bytes32,bytes,(bytes32[4]),(bytes32,uint8,bytes32[4])[],uint32,address)[])`).
+This service no longer decodes it, because no network runs it: braga, the op-geth chain
+that carried it, refuses connections, and flan is NXDOMAIN and gone from the
+db-chain-networks registry. The two live networks, cheesecake (7733102) and scx2
+(7728681), are both db-chain and both speak the ABI above. On cheesecake, 1,106 of 1,106
+sampled registry transactions carry `0x49650044` and none carry the old selector.
 
-Unchanged. Existing callers keep the same responses they had before.
+The 4 bytes are still recognised, and that is deliberate. Handed generation-1 calldata,
+the service answers `200` with `undecodable.code` `RETIRED_GENERATION` and an empty
+`operations` array, counted under its own selector in the gap tally. It is not `400`:
+`400` means "not Arkiv calldata", which is false about the registry's own `execute`, and
+the production caller sends no `to`, so the code would read `NOT_ARKIV_CALLDATA` and land
+this in the bucket anyone sizing foreign traffic counts. A legacy chain reappearing should
+look like itself, not like an ERC20 transfer.
 
 ### Upstream source of truth
 
-The ABIs mirrored in `src/abi.ts` are copies. Their source of truth is
+The ABI mirrored in `src/abi.ts` is a copy. Its source of truth is
 **Arkiv-Network/arkiv, `crates/arkiv-bindings/src/lib.rs`**.
 
 `tests/selectors.test.ts` recomputes each selector from its signature string and asserts
@@ -82,7 +79,8 @@ the pinned hex, mirroring that crate's `selectors_are_pinned` test. It checks tw
 independent paths: the signature strings must hash to the pinned bytes, and the ABI
 object this service decodes with must produce the same selector. Editing a struct fails
 the second, editing a pin fails the first. An upstream change fails the build here
-instead of turning into a silent 400 in production.
+instead of turning into a silent 400 in production. The retired selector is pinned the
+same way, against its signature string, since no ABI object derives it any more.
 
 A pinned selector cannot catch the drift most likely to happen. The tagged union exists so
 new operation types ship without touching the `execute` signature, and `operationData` is
@@ -106,11 +104,10 @@ Every live cheesecake create carries `expiresAt: 0` and a real `minLifetime`, so
 `expiresAt` is not the expiry the chain recorded. The decoder reports `expiresAt` and
 `minLifetime` raw, and fills `resolvedExpiresAt` only when you pass `blockNumber`.
 
-**The payload is an attribute.** Under generation 2 the bytes ride in a `$payload`
-attribute of type `bytes`, next to `$contentType` of type `str`. The decoder lifts both
-into the `payload` and `contentType` fields, mirroring what the executor does on chain,
-and lists the lifted names in `systemAttributes`. `payload.size` keeps the same meaning
-it had under the legacy ABI.
+**The payload is an attribute.** The bytes ride in a `$payload` attribute of type
+`bytes`, next to `$contentType` of type `str`. The decoder lifts both into the `payload`
+and `contentType` fields, mirroring what the executor does on chain, and lists the lifted
+names in `systemAttributes`.
 
 Note for anyone measuring stored bytes: a patch's `$payload` replaces the entity's
 payload. Summing patch payload sizes gives bytes written, not bytes stored.
@@ -184,7 +181,6 @@ Response:
 ```json
 {
   "functionName": "execute",
-  "abi": "v2",
   "selector": "0x49650044",
   "operationCount": 1,
   "operations": [
@@ -232,13 +228,15 @@ Notes:
   there are no operations. See "Decoder gaps" below.
 - `payload.hex` is omitted and `payload.truncated` is set above 8 KiB. A batch of 100 KiB
   payloads would otherwise be a multi-megabyte response, and the size is the part callers
-  use. The legacy ABI path is unchanged and always includes the hex.
+  use.
 - `payload.text` is present only when the payload is valid UTF-8.
 - `warnings` collects non-fatal notes: an unfamiliar attribute type, a non-canonical
   encoding, a value above a protocol limit.
 - A serialized transaction also gets `to`, plus a `warning` when the target is not the
   known registry address.
-- The legacy ABI response is unchanged, with `abi: "legacy"` added.
+- `selector` is how a caller tells encodings apart. There is no `abi` field: with one
+  generation it was a constant, and a second, weaker copy of what `selector` already says
+  precisely. A future generation arrives as a new selector, in that field.
 
 ### Error codes
 
@@ -293,10 +291,11 @@ at `200` with a machine-readable marker, so the caller records what it saw and k
 | `UNKNOWN_OPERATION_TAG` | operation | tag outside 1..5, so the protocol added an operation |
 | `MALFORMED_OPERATION_DATA` | operation | the tag is known, `operationData` does not match the struct |
 | `INPUT_TOO_LARGE` | response | the body is above `MAX_INPUT_BYTES`, so the bytes were never read; `operations` is empty |
+| `RETIRED_GENERATION` | response | generation-1 `execute()`, selector `0xba8ccf92`: the registry's own call, and an ABI this build no longer carries; `operations` is empty. A climbing count means a generation-1 chain is being indexed |
 | `DECODER_FAULT` | response | the decoder threw where it should have returned. A bug here, not bad calldata: `console.error` carries the stack |
 
-An undecodable operation keeps its raw `operationType` and takes the legacy `unknown(N)`
-name, never the name its tag claims: a struct we could not parse is not evidence that the
+An undecodable operation keeps its raw `operationType` and takes an `unknown(N)` name,
+never the name its tag claims: a struct we could not parse is not evidence that the
 operation it names happened, and a metrics pipeline must not count it as one. Every other
 field is at its empty value, so the row still has the shape a caller parses.
 
@@ -327,7 +326,8 @@ logs.
 ```json
 {
   "selectors": [
-    { "selector": "0x49650044", "signature": "execute((uint8,bytes)[])", "abi": "v2", "decodes": true }
+    { "selector": "0x49650044", "signature": "execute((uint8,bytes)[])", "decodes": true },
+    { "selector": "0xba8ccf92", "signature": "execute((uint8,bytes32,bytes,...)[])", "decodes": false, "retired": true }
   ],
   "maxInputBytes": 2097152,
   "gaps": [
@@ -363,12 +363,11 @@ Layout:
 
 | file | holds |
 |------|-------|
-| `src/abi.ts` | both registry ABIs, both selectors, the protocol constants |
-| `src/bytes.ts` | byte and word helpers both generations share |
+| `src/abi.ts` | the registry ABI, its selectors, the protocol constants, the retired selector |
+| `src/bytes.ts` | byte and word helpers |
 | `src/gaps.ts` | the one error class, the decoder-gap record and its counter |
-| `src/decodeLegacy.ts` | generation-1 decoding |
-| `src/decodeV2.ts` | generation-2 decoding |
-| `src/decoder.ts` | selector dispatch, and the single import path for callers |
+| `src/decode.ts` | decoding `execute((uint8,bytes)[])` |
+| `src/decoder.ts` | selector dispatch |
 | `src/server.ts` | HTTP surface and the status-code contract |
 
 `tests/fixtures/cheesecake.json` holds five real cheesecake transactions with their

@@ -11,16 +11,27 @@ import {
   ArkivAttributeType,
   ARKIV_ADDRESS,
   ENTITY_NONCE_SELECTOR,
-  EXECUTE_V2_SELECTOR,
-  LEGACY_EXECUTE_SELECTOR,
+  EXECUTE_SELECTOR,
+  RETIRED_EXECUTE_SELECTOR,
   MAX_ATTRIBUTES,
   MAX_STR_BYTES,
 } from "../src/abi"
 import { MAX_INPUT_BYTES } from "../src/server"
-import { attr, attribute, createOpV2, deleteOpV2, encodeExecuteV2, word } from "./encodeV2"
+import { attr, attribute, createOp, deleteOp, encodeExecute, word } from "./encode"
 
 const ENTITY_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as const
 const ZERO_WORD = "00".repeat(32)
+
+/**
+ * A well-formed generation-1 `execute(...)` call: one delete of entity 0x2222...
+ *
+ * Frozen bytes, not an encoder call, because the generation-1 ABI is gone from this repo
+ * and bringing it back to build a test vector would put the dead code straight back. These
+ * were produced by encoding against that ABI before it was deleted, which is the only run
+ * of it this branch needs. A generation-1 chain would send exactly this shape.
+ */
+export const RETIRED_GENERATION_CALLDATA =
+  "0xba8ccf92000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000522222222222222222222222222222222222222222222222222222222222222220000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
 /** A create's operationData is abi.encode(tuple), so the tuple is behind a 0x20 offset. */
 function createDataWithAttributeCount(count: bigint): Hex {
@@ -54,42 +65,43 @@ export const HOSTILE_CALLDATA: HostileCase[] = [
   // --- truncated input ---
   { name: "one byte", data: "0xff" },
   { name: "three bytes, short of a selector", data: "0x496500" },
-  { name: "execute selector alone", data: EXECUTE_V2_SELECTOR },
-  { name: "execute selector plus one byte", data: `${EXECUTE_V2_SELECTOR}ff` },
-  { name: "execute selector plus half a word", data: `${EXECUTE_V2_SELECTOR}${"00".repeat(16)}` },
-  { name: "execute selector plus a bare offset word", data: `${EXECUTE_V2_SELECTOR}${word(32n).slice(2)}` },
-  { name: "legacy selector with garbage", data: `${LEGACY_EXECUTE_SELECTOR}deadbeef` },
+  { name: "execute selector alone", data: EXECUTE_SELECTOR },
+  { name: "execute selector plus one byte", data: `${EXECUTE_SELECTOR}ff` },
+  { name: "execute selector plus half a word", data: `${EXECUTE_SELECTOR}${"00".repeat(16)}` },
+  { name: "execute selector plus a bare offset word", data: `${EXECUTE_SELECTOR}${word(32n).slice(2)}` },
+  { name: "retired generation-1 selector with garbage", data: `${RETIRED_EXECUTE_SELECTOR}deadbeef` },
+  { name: "retired generation-1 selector alone", data: RETIRED_EXECUTE_SELECTOR },
   { name: "view selector with garbage", data: `${ENTITY_NONCE_SELECTOR}ff` },
   { name: "view selector alone", data: ENTITY_NONCE_SELECTOR },
 
   // --- a declared length or offset past the buffer ---
   {
     name: "operation array length past the buffer",
-    data: `${EXECUTE_V2_SELECTOR}${word(32n).slice(2)}${word(0xffffffffn).slice(2)}`,
+    data: `${EXECUTE_SELECTOR}${word(32n).slice(2)}${word(0xffffffffn).slice(2)}`,
   },
   {
     name: "operation array length at uint256 max",
-    data: `${EXECUTE_V2_SELECTOR}${word(32n).slice(2)}${word(2n ** 256n - 1n).slice(2)}`,
+    data: `${EXECUTE_SELECTOR}${word(32n).slice(2)}${word(2n ** 256n - 1n).slice(2)}`,
   },
   {
     name: "operation array offset past the buffer",
-    data: `${EXECUTE_V2_SELECTOR}${word(0xffffffffn).slice(2)}`,
+    data: `${EXECUTE_SELECTOR}${word(0xffffffffn).slice(2)}`,
   },
   {
     name: "operation array offset at uint256 max",
-    data: `${EXECUTE_V2_SELECTOR}${word(2n ** 256n - 1n).slice(2)}`,
+    data: `${EXECUTE_SELECTOR}${word(2n ** 256n - 1n).slice(2)}`,
   },
   {
     name: "attribute count past the buffer",
-    data: encodeExecuteV2([{ operation: 1, operationData: createDataWithAttributeCount(0xffffffffn) }]),
+    data: encodeExecute([{ operation: 1, operationData: createDataWithAttributeCount(0xffffffffn) }]),
   },
   {
     name: "attribute count at uint256 max",
-    data: encodeExecuteV2([{ operation: 1, operationData: createDataWithAttributeCount(2n ** 256n - 1n) }]),
+    data: encodeExecute([{ operation: 1, operationData: createDataWithAttributeCount(2n ** 256n - 1n) }]),
   },
   {
     name: "operationData length past the buffer",
-    data: `${EXECUTE_V2_SELECTOR}${word(32n).slice(2)}${word(1n).slice(2)}${word(32n).slice(2)}${word(1n).slice(2)}${word(0xffffffffn).slice(2)}`,
+    data: `${EXECUTE_SELECTOR}${word(32n).slice(2)}${word(1n).slice(2)}${word(32n).slice(2)}${word(1n).slice(2)}${word(0xffffffffn).slice(2)}`,
   },
 
   // --- an unknown selector ---
@@ -98,70 +110,86 @@ export const HOSTILE_CALLDATA: HostileCase[] = [
   { name: "unknown selector that looks like execute", data: `0x49650045${word(32n).slice(2)}${word(0n).slice(2)}` },
 
   // --- an unknown operation tag ---
-  { name: "operation tag 0", data: encodeExecuteV2([{ operation: 0, operationData: "0x" }]) },
-  { name: "operation tag 6, the next one the protocol adds", data: encodeExecuteV2([{ operation: 6, operationData: "0x" }]) },
-  { name: "operation tag 255", data: encodeExecuteV2([{ operation: 255, operationData: "0xdeadbeef" }]) },
+  { name: "operation tag 0", data: encodeExecute([{ operation: 0, operationData: "0x" }]) },
+  { name: "operation tag 6, the next one the protocol adds", data: encodeExecute([{ operation: 6, operationData: "0x" }]) },
+  { name: "operation tag 255", data: encodeExecute([{ operation: 255, operationData: "0xdeadbeef" }]) },
   {
     name: "a batch that is all unknown tags",
-    data: encodeExecuteV2([6, 7, 8, 9].map((operation) => ({ operation, operationData: "0x" }))),
+    data: encodeExecute([6, 7, 8, 9].map((operation) => ({ operation, operationData: "0x" }))),
   },
   {
     name: "an unknown tag between two good operations",
-    data: encodeExecuteV2([deleteOpV2(ENTITY_KEY), { operation: 6, operationData: "0x" }, deleteOpV2(ENTITY_KEY)]),
+    data: encodeExecute([deleteOp(ENTITY_KEY), { operation: 6, operationData: "0x" }, deleteOp(ENTITY_KEY)]),
   },
 
   // --- malformed operationData under a known tag ---
-  { name: "known tag, empty operationData", data: encodeExecuteV2([{ operation: 5, operationData: "0x" }]) },
-  { name: "known tag, two junk bytes", data: encodeExecuteV2([{ operation: 5, operationData: "0x1234" }]) },
-  { name: "known tag, one word short", data: encodeExecuteV2([{ operation: 1, operationData: `0x${ZERO_WORD}` }]) },
-  { name: "malformed argument block under our own selector", data: `${EXECUTE_V2_SELECTOR}deadbeef` },
+  { name: "known tag, empty operationData", data: encodeExecute([{ operation: 5, operationData: "0x" }]) },
+  { name: "known tag, two junk bytes", data: encodeExecute([{ operation: 5, operationData: "0x1234" }]) },
+  { name: "known tag, one word short", data: encodeExecute([{ operation: 1, operationData: `0x${ZERO_WORD}` }]) },
+  { name: "malformed argument block under our own selector", data: `${EXECUTE_SELECTOR}deadbeef` },
 
   // --- hostile attribute values ---
   {
     name: "non-UTF8 bytes in a str attribute",
-    data: encodeExecuteV2([createOpV2({ attributes: [attribute("note", ArkivAttributeType.Str, "0xfffefdfc")] })]),
+    data: encodeExecute([createOp({ attributes: [attribute("note", ArkivAttributeType.Str, "0xfffefdfc")] })]),
   },
   {
     name: "a lone UTF-16 surrogate in a str attribute",
-    data: encodeExecuteV2([createOpV2({ attributes: [attribute("note", ArkivAttributeType.Str, "0xeda080")] })]),
+    data: encodeExecute([createOp({ attributes: [attribute("note", ArkivAttributeType.Str, "0xeda080")] })]),
   },
   {
     name: "non-UTF8 bytes in $contentType",
-    data: encodeExecuteV2([createOpV2({ attributes: [attribute("$contentType", ArkivAttributeType.Str, "0xff")] })]),
+    data: encodeExecute([createOp({ attributes: [attribute("$contentType", ArkivAttributeType.Str, "0xff")] })]),
   },
   {
     name: "a str attribute above the protocol limit",
-    data: encodeExecuteV2([
-      createOpV2({ attributes: [attribute("note", ArkivAttributeType.Str, `0x${"41".repeat(MAX_STR_BYTES * 4)}`)] }),
+    data: encodeExecute([
+      createOp({ attributes: [attribute("note", ArkivAttributeType.Str, `0x${"41".repeat(MAX_STR_BYTES * 4)}`)] }),
     ]),
   },
   {
     name: "an attribute type the protocol has not defined",
-    data: encodeExecuteV2([createOpV2({ attributes: [attribute("note", 200, `0x${ZERO_WORD}`)] })]),
+    data: encodeExecute([createOp({ attributes: [attribute("note", 200, `0x${ZERO_WORD}`)] })]),
   },
   {
     name: "a fixed-width attribute carrying the wrong number of bytes",
-    data: encodeExecuteV2([createOpV2({ attributes: [attribute("n", ArkivAttributeType.Uint64, "0xff")] })]),
+    data: encodeExecute([createOp({ attributes: [attribute("n", ArkivAttributeType.Uint64, "0xff")] })]),
   },
   {
     name: "more attributes than the protocol allows",
-    data: encodeExecuteV2([
-      createOpV2({
+    data: encodeExecute([
+      createOp({
         attributes: Array.from({ length: MAX_ATTRIBUTES * 4 }, (_, i) => attr.u64(`k${i}`, BigInt(i))),
       }),
     ]),
   },
   {
     name: "an empty attribute name",
-    data: encodeExecuteV2([createOpV2({ attributes: [attr.u64("", 1n)] })]),
+    data: encodeExecute([createOp({ attributes: [attr.u64("", 1n)] })]),
   },
 
   // --- empty and degenerate batches ---
-  { name: "empty batch", data: encodeExecuteV2([]) },
-  { name: "a create with no attributes", data: encodeExecuteV2([createOpV2({})]) },
+  { name: "empty batch", data: encodeExecute([]) },
+  { name: "a create with no attributes", data: encodeExecute([createOp({})]) },
   {
     name: "expiresAt at uint64 max, the executor's permanence marker",
-    data: encodeExecuteV2([createOpV2({ expiresAt: 2n ** 64n - 1n, minLifetime: 2n ** 64n - 1n })]),
+    data: encodeExecute([createOp({ expiresAt: 2n ** 64n - 1n, minLifetime: 2n ** 64n - 1n })]),
+  },
+
+  // --- the retired generation, which no chain runs but the corpus still has to hold ---
+  { name: "a well-formed generation-1 execute() call", data: RETIRED_GENERATION_CALLDATA },
+  {
+    name: "a serialized transaction carrying generation-1 calldata",
+    data: serializeTransaction({
+      type: "eip1559",
+      chainId: 60138453025,
+      to: ARKIV_ADDRESS,
+      nonce: 0,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+      gas: 200_000n,
+      data: RETIRED_GENERATION_CALLDATA as Hex,
+    }),
   },
 
   // --- serialized transactions ---
@@ -209,8 +237,8 @@ const CONTEMPLATED_TX_MAX_SIZE_BYTES = 524_288
 
 /** One create carrying `payloadBytes` in $payload, so the calldata is a little above it. */
 function createCarrying(payloadBytes: number): string {
-  return encodeExecuteV2([
-    createOpV2({
+  return encodeExecute([
+    createOp({
       minLifetime: 100n,
       attributes: [
         attr.str("$contentType", "application/octet-stream"),

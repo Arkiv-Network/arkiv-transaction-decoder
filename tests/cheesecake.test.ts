@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Hex } from "viem"
-import { ARKIV_ADDRESS, type DecodedTransactionV2, decodeArkivTransaction } from "../src/decoder"
+import { ARKIV_ADDRESS } from "../src/abi"
+import type { DecodedTransaction } from "../src/decode"
+import { decodeArkivTransaction } from "../src/decoder"
 import { EVENT_TOPICS } from "./topics"
 import fixtures from "./fixtures/cheesecake.json"
 
@@ -13,7 +15,7 @@ import fixtures from "./fixtures/cheesecake.json"
 
 // transfer_ownership is mapped for completeness but no fixture exercises it: the cheesecake
 // probes never transferred an entity, so tag 4 is covered only by the synthetic vectors in
-// tests/decoderV2.test.ts.
+// tests/decoder.test.ts.
 const EVENT_FOR_OPERATION: Record<string, string> = {
   create: EVENT_TOPICS["EntityCreated(bytes32,address,uint64,uint8)"],
   patch: EVENT_TOPICS["EntityPatched(bytes32,address)"],
@@ -29,11 +31,11 @@ function word(data: string, index: number): bigint {
   return BigInt(`0x${data.slice(2 + index * 64, 2 + (index + 1) * 64)}`)
 }
 
-function decode(fixture: Fixture): DecodedTransactionV2 {
+function decode(fixture: Fixture): DecodedTransaction {
   return decodeArkivTransaction(fixture.input, {
     to: fixture.to as Hex,
     blockNumber: BigInt(fixture.blockNumber),
-  }) as DecodedTransactionV2
+  }) as DecodedTransaction
 }
 
 describe("cheesecake devnet calldata", () => {
@@ -49,7 +51,6 @@ describe("cheesecake devnet calldata", () => {
     "%s decodes and agrees with its receipt logs",
     (_label, fixture) => {
       const decoded = decode(fixture)
-      expect(decoded.abi).toBe("v2")
       expect(decoded.warning).toBeUndefined()
 
       // Count and order: one registry log per operation, in the same sequence.

@@ -50,6 +50,12 @@ export type DecoderGapCode =
   | "UNKNOWN_OPERATION_TAG"
   /** Body above MAX_INPUT_BYTES, so the bytes were never read. */
   | "INPUT_TOO_LARGE"
+  /**
+   * Generation-1 execute() calldata. The selector is the registry's own, so this is not
+   * foreign traffic, but its ABI was removed and no live network runs it. A climbing count
+   * here means a generation-1 chain is being indexed.
+   */
+  | "RETIRED_GENERATION"
   /** The decoder threw where it should have returned. Our bug, not a verdict on the bytes. */
   | "DECODER_FAULT"
 

@@ -1,4 +1,4 @@
-/** Byte and word helpers both ABI generations share. */
+/** Byte and word helpers the decoder shares. */
 import { type Hex, hexToBytes } from "viem"
 
 export function decodeUtf8(bytes: Uint8Array): string | undefined {

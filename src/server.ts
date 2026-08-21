@@ -1,16 +1,14 @@
 import { getAddress, isAddress } from "viem"
 import type { Address } from "viem"
-import { EXECUTE_V2_SELECTOR, LEGACY_EXECUTE_SELECTOR, REGISTRY_SIGNATURES } from "./abi"
 import {
-  DecodeError,
-  type DecodeOptions,
-  type DecoderGapCode,
-  KNOWN_SELECTORS,
-  UnknownSelectorError,
-  decodeArkivTransaction,
-  decoderGaps,
-  recordGap,
-} from "./decoder"
+  EXECUTE_SELECTOR,
+  REGISTRY_SIGNATURES,
+  RETIRED_EXECUTE_SELECTOR,
+  RETIRED_EXECUTE_SIGNATURE,
+} from "./abi"
+import type { DecodeOptions } from "./decode"
+import { KNOWN_SELECTORS, decodeArkivTransaction } from "./decoder"
+import { DecodeError, type DecoderGapCode, UnknownSelectorError, decoderGaps, recordGap } from "./gaps"
 import { SERVICE_NAME, SERVICE_VERSION } from "./version"
 
 /**
@@ -96,22 +94,19 @@ const USAGE = {
 }
 
 const SELECTOR_INFO = [
-  {
-    selector: EXECUTE_V2_SELECTOR,
-    signature: "execute((uint8,bytes)[])",
-    abi: "v2",
-    decodes: true,
-  },
-  {
-    selector: LEGACY_EXECUTE_SELECTOR,
-    signature:
-      "execute((uint8,bytes32,bytes,(bytes32[4]),(bytes32,uint8,bytes32[4])[],uint32,address)[])",
-    abi: "legacy",
-    decodes: true,
-  },
+  { selector: EXECUTE_SELECTOR, signature: "execute((uint8,bytes)[])", decodes: true },
   ...Object.entries(REGISTRY_SIGNATURES)
     .filter(([signature]) => signature !== "execute((uint8,bytes)[])")
-    .map(([signature, selector]) => ({ selector, signature, abi: "v2", decodes: false })),
+    .map(([signature, selector]) => ({ selector, signature, decodes: false })),
+  // Listed so an operator can tell a selector this build retired from one it never knew.
+  // Both answer with zero operations; only this one means a chain is running an ABI we
+  // deleted, and the RETIRED_GENERATION tally next to it is the count that says so.
+  {
+    selector: RETIRED_EXECUTE_SELECTOR,
+    signature: RETIRED_EXECUTE_SIGNATURE,
+    decodes: false,
+    retired: true,
+  },
 ]
 
 /**

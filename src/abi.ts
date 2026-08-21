@@ -1,11 +1,16 @@
-import { type Address, type Hex, toFunctionSelector } from "viem"
+import type { Address, Hex } from "viem"
 
 /**
- * Every Arkiv entity-registry ABI this service decodes: generation 2
- * (`execute((uint8,bytes)[])`, selector 0x49650044) and the generation-1 ABI below it.
+ * The Arkiv entity-registry ABI this service decodes: `execute((uint8,bytes)[])`,
+ * selector 0x49650044.
  *
- * One file, because a selector we were missing is what this branch exists to fix and a
- * second copy somewhere else is how the next one gets missed.
+ * One generation, because the chain runs one. Generation 1 lived on braga, which now
+ * refuses connections, and on flan, which is NXDOMAIN and gone from the db-chain-networks
+ * registry. The two live networks, cheesecake (7733102) and scx2 (7728681), are both
+ * db-chain and both speak the ABI below; 1,106 of 1,106 sampled cheesecake registry
+ * transactions carry 0x49650044 and none carry the old selector. Only those 4 retired
+ * bytes survive, at the foot of this file, so a legacy chain coming back is named rather
+ * than mistaken for foreign traffic.
  *
  * This is a hand-maintained copy. The source of truth is
  * Arkiv-Network/arkiv, crates/arkiv-bindings/src/lib.rs.
@@ -13,6 +18,9 @@ import { type Address, type Hex, toFunctionSelector } from "viem"
  * asserts the pinned hex, mirroring that crate's `selectors_are_pinned` test, so an
  * upstream struct change fails the build here instead of becoming a silent 400.
  */
+
+/** The registry contract, the same address on every Arkiv network. */
+export const ARKIV_ADDRESS = "0x4400000000000000000000000000000000000044" as Address
 
 // Ident32 is `type Ident32 is bytes32`, a Solidity user-defined value type. It flattens
 // to a plain bytes32 on the wire and in the canonical signature, which is why the pinned
@@ -23,7 +31,7 @@ export const ATTRIBUTE_COMPONENTS = [
   { name: "value", type: "bytes" },
 ] as const
 
-export const EXECUTE_V2_ABI = [
+export const EXECUTE_ABI = [
   {
     type: "function",
     name: "execute",
@@ -116,7 +124,7 @@ export enum ArkivAttributeType {
   EntityKey = 10,
 }
 
-export const OPERATION_NAMES_V2 = {
+export const OPERATION_NAMES = {
   [ArkivOperationTag.Create]: "create",
   [ArkivOperationTag.Patch]: "patch",
   [ArkivOperationTag.ExtendExpiry]: "extend_expiry",
@@ -124,10 +132,9 @@ export const OPERATION_NAMES_V2 = {
   [ArkivOperationTag.Delete]: "delete",
 } as const
 
-export type ArkivOperationName = (typeof OPERATION_NAMES_V2)[keyof typeof OPERATION_NAMES_V2]
+export type ArkivOperationName = (typeof OPERATION_NAMES)[keyof typeof OPERATION_NAMES]
 
-/** AttributeType::name() in arkiv-bindings. Deliberately not the legacy vocabulary: the
- *  numbers collide with different meanings (legacy 2 is String, v2 2 is i32). */
+/** AttributeType::name() in arkiv-bindings. */
 export const ATTRIBUTE_TYPE_NAMES = {
   [ArkivAttributeType.Tombstone]: "tombstone",
   [ArkivAttributeType.Bool]: "bool",
@@ -163,13 +170,13 @@ export const CONTENT_TYPE_ATTRIBUTE = "$contentType"
 
 // Pinned by hand, never computed: tests/selectors.test.ts compares the computed value
 // against these. Copied from the selectors_are_pinned test in arkiv-bindings/src/lib.rs.
-export const EXECUTE_V2_SELECTOR = "0x49650044" as Hex
+export const EXECUTE_SELECTOR = "0x49650044" as Hex
 export const ENTITY_NONCE_SELECTOR = "0x36917bfd" as Hex
 export const CUSTOM_ATTRIBUTE_NAMES_SELECTOR = "0x58d5418a" as Hex
 export const ATTRIBUTE_TYPE_ID_SELECTOR = "0x434fb6f3" as Hex
 
 export const REGISTRY_SIGNATURES = {
-  "execute((uint8,bytes)[])": EXECUTE_V2_SELECTOR,
+  "execute((uint8,bytes)[])": EXECUTE_SELECTOR,
   "entityNonce(address)": ENTITY_NONCE_SELECTOR,
   "customAttributeNames(bytes32)": CUSTOM_ATTRIBUTE_NAMES_SELECTOR,
   "attributeTypeId(bytes32,bytes32)": ATTRIBUTE_TYPE_ID_SELECTOR,
@@ -187,77 +194,23 @@ export const VIEW_FUNCTION_NAMES = {
 export type ArkivViewFunctionName = (typeof VIEW_FUNCTION_NAMES)[keyof typeof VIEW_FUNCTION_NAMES]
 
 // ---------------------------------------------------------------------------
-// Legacy registry ABI (generation 1). Kept verbatim: existing callers still send it.
+// Generation 1, retired. Four bytes, no ABI.
 // ---------------------------------------------------------------------------
 
-// Mirrors @arkiv-network/sdk (src/utils/arkivTransactions.ts, src/consts.ts).
-// Operation struct: (uint8 operationType, bytes32 entityKey, bytes payload,
-//   (bytes32[4] data) contentType, (bytes32 name, uint8 valueType, bytes32[4] value)[] attributes,
-//   uint32 expiresAt, address newOwner)
-export const ARKIV_ADDRESS = "0x4400000000000000000000000000000000000044" as Address
+/**
+ * The generation-1 `execute(...)` selector. Its structs are gone from this repo: no live
+ * network runs that ABI, so decoding it was code no caller could reach.
+ *
+ * Recognising it is not the same as decoding it, which is why the 4 bytes stay. Drop them
+ * and generation-1 calldata becomes an unknown selector, indistinguishable from every
+ * ERC20 transfer on the chain and answered with "not Arkiv calldata", which is false about
+ * a registry call we can name with certainty. Kept, it answers as a RETIRED_GENERATION gap
+ * under its own subject in the tally, so "a legacy chain is being indexed" and "the
+ * registry grew a function we do not know" stay two different incidents.
+ */
+export const RETIRED_EXECUTE_SELECTOR = "0xba8ccf92" as Hex
 
-export const ENTITY_EXECUTE_ABI = [
-  {
-    type: "function",
-    name: "execute",
-    stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "ops",
-        type: "tuple[]",
-        components: [
-          { name: "operationType", type: "uint8" },
-          { name: "entityKey", type: "bytes32" },
-          { name: "payload", type: "bytes" },
-          {
-            name: "contentType",
-            type: "tuple",
-            components: [{ name: "data", type: "bytes32[4]" }],
-          },
-          {
-            name: "attributes",
-            type: "tuple[]",
-            components: [
-              { name: "name", type: "bytes32" },
-              { name: "valueType", type: "uint8" },
-              { name: "value", type: "bytes32[4]" },
-            ],
-          },
-          { name: "expiresAt", type: "uint32" },
-          { name: "newOwner", type: "address" },
-        ],
-      },
-    ],
-    outputs: [],
-  },
-] as const
-
-export const LEGACY_EXECUTE_SELECTOR = toFunctionSelector(ENTITY_EXECUTE_ABI[0])
-/** @deprecated kept for callers written against the single-ABI decoder */
-export const EXECUTE_SELECTOR = LEGACY_EXECUTE_SELECTOR
-
-export enum EntityOperationType {
-  Create = 1,
-  Update = 2,
-  Extend = 3,
-  Transfer = 4,
-  Delete = 5,
-  Expire = 6,
-}
-
-export enum AttributeValueType {
-  Uint = 1,
-  String = 2,
-  EntityKey = 3,
-}
-
-/** EntityOperationType::name() of generation 1. Paired with OPERATION_NAMES_V2 above:
- *  the two vocabularies collide, so neither may be read onto the other. */
-export const LEGACY_OPERATION_NAMES: Record<number, string> = {
-  [EntityOperationType.Create]: "create",
-  [EntityOperationType.Update]: "update",
-  [EntityOperationType.Extend]: "extend",
-  [EntityOperationType.Transfer]: "transfer",
-  [EntityOperationType.Delete]: "delete",
-  [EntityOperationType.Expire]: "expire",
-}
+/** Pinned like the live ones. tests/selectors.test.ts hashes this to the 4 bytes above,
+ *  so the retired selector cannot rot into a typo now that no ABI object derives it. */
+export const RETIRED_EXECUTE_SIGNATURE =
+  "execute((uint8,bytes32,bytes,(bytes32[4]),(bytes32,uint8,bytes32[4])[],uint32,address)[])"

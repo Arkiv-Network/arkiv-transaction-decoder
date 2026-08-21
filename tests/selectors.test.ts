@@ -1,24 +1,25 @@
 import { describe, expect, test } from "bun:test"
 import { keccak256, toFunctionSelector, toHex } from "viem"
 import {
-  ENTITY_EXECUTE_ABI,
-  EXECUTE_V2_ABI,
-  EXECUTE_V2_SELECTOR,
-  LEGACY_EXECUTE_SELECTOR,
+  EXECUTE_ABI,
+  EXECUTE_SELECTOR,
   REGISTRY_SIGNATURES,
+  RETIRED_EXECUTE_SELECTOR,
+  RETIRED_EXECUTE_SIGNATURE,
 } from "../src/abi"
-import { decodeOperationV2 } from "../src/decoder"
+import { decodeOperation } from "../src/decode"
+import { KNOWN_SELECTORS } from "../src/decoder"
 import { EVENT_TOPICS } from "./topics"
 import operationVectors from "./fixtures/operation-vectors.json"
 
 /**
  * Mirrors selectors_are_pinned in Arkiv-Network/arkiv crates/arkiv-bindings/src/lib.rs.
  *
- * The registry ABIs in src/abi.ts are hand-maintained copies of structs another team owns
- * in another repo. That copy is how selector 0x49650044 was missed for weeks. Both
- * paths below are needed and must not share an input: path 1 alone passes even when the
- * ABI object is wrong, path 2 alone passes when someone edits the pin to match a broken
- * ABI. Together, changing a struct fails path 2 and changing a pin fails path 1.
+ * The registry ABI in src/abi.ts is a hand-maintained copy of structs another team owns in
+ * another repo. That copy is how selector 0x49650044 was missed for weeks. Both paths
+ * below are needed and must not share an input: path 1 alone passes even when the ABI
+ * object is wrong, path 2 alone passes when someone edits the pin to match a broken ABI.
+ * Together, changing a struct fails path 2 and changing a pin fails path 1.
  *
  * What a pinned selector cannot catch is the drift that is most likely to happen. The
  * tagged union exists precisely so new operation types ship without touching the execute
@@ -40,16 +41,20 @@ describe("registry selectors are pinned", () => {
   )
 
   test("the ABI object we decode with produces the pinned execute selector", () => {
-    expect(toFunctionSelector(EXECUTE_V2_ABI[0])).toBe(EXECUTE_V2_SELECTOR)
+    expect(toFunctionSelector(EXECUTE_ABI[0])).toBe(EXECUTE_SELECTOR)
   })
 
-  test("the legacy ABI object still produces the legacy selector", () => {
-    expect(toFunctionSelector(ENTITY_EXECUTE_ABI[0])).toBe("0xba8ccf92")
-    expect(LEGACY_EXECUTE_SELECTOR).toBe("0xba8ccf92")
+  test("the retired generation-1 selector is pinned to its signature too", () => {
+    // No ABI object derives these 4 bytes any more, so this hash is the only thing keeping
+    // them honest. Get them wrong and generation-1 calldata stops being recognised: it
+    // falls through to "not Arkiv calldata", which is the miscount the constant prevents.
+    expect(keccak256(toHex(RETIRED_EXECUTE_SIGNATURE)).slice(0, 10)).toBe(RETIRED_EXECUTE_SELECTOR)
+    expect(RETIRED_EXECUTE_SELECTOR).toBe("0xba8ccf92")
   })
 
-  test("the two generations do not share a selector", () => {
-    expect(EXECUTE_V2_SELECTOR).not.toBe(LEGACY_EXECUTE_SELECTOR)
+  test("the retired selector is not in the set this service decodes", () => {
+    expect(KNOWN_SELECTORS).toEqual([EXECUTE_SELECTOR])
+    expect(KNOWN_SELECTORS).not.toContain(RETIRED_EXECUTE_SELECTOR)
   })
 })
 
@@ -64,7 +69,7 @@ describe("one frozen operationData per tag still decodes", () => {
     "%s decodes to the same operation it did when it was captured",
     (_name, vector: Vector) => {
       const warnings: string[] = []
-      const decoded = decodeOperationV2(
+      const decoded = decodeOperation(
         { operation: vector.tag, operationData: vector.operationData as `0x${string}` },
         0,
         { blockNumber: null, payloadHexLimit: 8192 },

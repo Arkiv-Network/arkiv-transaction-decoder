@@ -1,217 +1,509 @@
 import { describe, expect, test } from "bun:test"
 import { serializeTransaction, toHex } from "viem"
-import {
-  ARKIV_ADDRESS,
-  DecodeError,
-  EXECUTE_SELECTOR,
-  EntityOperationType,
-  decodeArkivTransaction,
-  decodeCalldata,
-} from "../src/decoder"
-import { createOp, emptyOp, encodeAttribute, encodeExecute, rawAttribute } from "./encode"
+import { ARKIV_ADDRESS, ArkivOperationTag, EXECUTE_SELECTOR, RETIRED_EXECUTE_SELECTOR } from "../src/abi"
+import { type DecodedTransaction, type DecodedViewCall, decodeCalldata, resolveExpiry } from "../src/decode"
+import { decodeArkivTransaction } from "../src/decoder"
+import { DecodeError, UnknownSelectorError } from "../src/gaps"
+import { attr, createOp, deleteOp, encodeExecute, extendOp, patchOp, transferOp, word } from "./encode"
+import { RETIRED_GENERATION_CALLDATA } from "./hostileCalldata"
 
 const ENTITY_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as const
 const OTHER_KEY = "0x2222222222222222222222222222222222222222222222222222222222222222" as const
 const NEW_OWNER = "0xAbcd000000000000000000000000000000001234" as const
 
-describe("decodeCalldata", () => {
-  test("decodes a create operation with payload, content type and attributes", () => {
-    const data = encodeExecute([
-      createOp({
-        entityKey: ENTITY_KEY,
-        payload: "Hello Arkiv",
-        contentType: "text/plain",
-        attributes: [
-          { key: "category", value: "greeting" },
-          { key: "version", value: 42 },
-        ],
-        expiresAtBlocks: 1800,
-      }),
-    ])
+function decodeOne(calldata: `0x${string}`, options?: Parameters<typeof decodeCalldata>[1]) {
+  const result = decodeCalldata(calldata, options)
+  expect(result.operations).toHaveLength(1)
+  return result.operations[0]!
+}
 
-    const result = decodeCalldata(data)
-    expect(result.functionName).toBe("execute")
-    expect(result.operations).toHaveLength(1)
+describe("decodeCalldata operations", () => {
+  test("decodes a create, lifting $payload and $contentType out of the attributes", () => {
+    const op = decodeOne(
+      encodeExecute([
+        createOp({
+          salt: 337797463300736330483541628654607568406n,
+          minLifetime: 30n,
+          creationFlags: 1,
+          attributes: [
+            attr.str("$contentType", "application/json"),
+            attr.bytes("$payload", new TextEncoder().encode('{"probe":"smoke"}')),
+            attr.str("kind", "smoke"),
+            attr.i32("rank", 2),
+          ],
+        }),
+      ]),
+    )
 
-    const op = result.operations[0]!
     expect(op.operation).toBe("create")
-    expect(op.operationType).toBe(EntityOperationType.Create)
-    expect(op.entityKey).toBe(ENTITY_KEY)
-    expect(op.payload.text).toBe("Hello Arkiv")
-    expect(op.payload.size).toBe(11)
-    expect(op.contentType).toBe("text/plain")
-    expect(op.expiresAtBlocks).toBe(1800)
-    expect(op.approxExpiresInSeconds).toBe(3600)
-    expect(op.newOwner).toBeNull()
-
+    expect(op.operationType).toBe(ArkivOperationTag.Create)
+    expect(op.index).toBe(0)
+    // A create carries a salt: the key is derived on chain, so we must not invent one.
+    expect(op.entityKey).toBeNull()
+    expect(op.salt).toBe("337797463300736330483541628654607568406")
+    expect(op.creationFlags).toBe(1)
+    expect(op.creationFlagNames).toEqual(["readonly"])
+    expect(op.contentType).toBe("application/json")
+    expect(op.payload.size).toBe(17)
+    expect(op.payload.present).toBe(true)
+    expect(op.payload.text).toBe('{"probe":"smoke"}')
+    expect(op.systemAttributes).toEqual(["$contentType", "$payload"])
+    expect(op.attributeCount).toBe(4)
     expect(op.attributes).toEqual([
-      { key: "category", valueType: 2, valueTypeName: "string", value: "greeting" },
-      { key: "version", valueType: 1, valueTypeName: "uint", value: "42" },
+      { key: "kind", valueType: 8, valueTypeName: "str", value: "smoke", sizeBytes: 5 },
+      { key: "rank", valueType: 2, valueTypeName: "i32", value: "2", sizeBytes: 32 },
     ])
   })
 
-  test("decodes a batch with update, delete, extend and transfer operations", () => {
-    const update = createOp({
-      entityKey: ENTITY_KEY,
-      payload: '{"a":1}',
-      contentType: "application/json",
-      expiresAtBlocks: 0,
-    })
-    update.operationType = EntityOperationType.Update
+  test("decodes a patch, including a tombstone mutation", () => {
+    const op = decodeOne(
+      encodeExecute([
+        patchOp(ENTITY_KEY, [attr.tombstone("flag"), attr.i32("rank", 2), attr.str("status", "patched")]),
+      ]),
+    )
 
-    const extend = emptyOp(EntityOperationType.Extend, OTHER_KEY)
-    extend.expiresAt = 500
-
-    const transfer = emptyOp(EntityOperationType.Transfer, OTHER_KEY)
-    transfer.newOwner = NEW_OWNER
-
-    const data = encodeExecute([
-      update,
-      emptyOp(EntityOperationType.Delete, ENTITY_KEY),
-      extend,
-      transfer,
-    ])
-
-    const { operations } = decodeCalldata(data)
-    expect(operations.map((op) => op.operation)).toEqual(["update", "delete", "extend", "transfer"])
-
-    expect(operations[0]!.payload.text).toBe('{"a":1}')
-    expect(operations[0]!.contentType).toBe("application/json")
-
-    expect(operations[1]!.payload.size).toBe(0)
-    expect(operations[1]!.contentType).toBeNull()
-    expect(operations[1]!.attributes).toEqual([])
-
-    expect(operations[2]!.expiresAtBlocks).toBe(500)
-
-    expect(operations[3]!.newOwner).toBe(NEW_OWNER)
+    expect(op.operation).toBe("patch")
+    expect(op.entityKey).toBe(ENTITY_KEY)
+    expect(op.attributeCount).toBe(3)
+    expect(op.attributes[0]).toEqual({ key: "flag", valueType: 0, valueTypeName: "tombstone", value: "", sizeBytes: 0 })
+    expect(op.payload.present).toBe(false)
+    expect(op.payload.size).toBe(0)
   })
 
-  test("decodes binary payloads without a text field", () => {
-    const data = encodeExecute([
-      createOp({
-        entityKey: ENTITY_KEY,
-        payload: new Uint8Array([0xff, 0xfe, 0x00, 0x80]),
-        contentType: "application/octet-stream",
-        expiresAtBlocks: 10,
-      }),
-    ])
+  test("decodes an extend_expiry and resolves the block only when given one", () => {
+    const calldata = encodeExecute([extendOp(ENTITY_KEY, 0n, 150n)])
 
-    const op = decodeCalldata(data).operations[0]!
-    expect(op.payload.text).toBeUndefined()
-    expect(op.payload.hex).toBe("0xfffe0080")
-    expect(op.payload.size).toBe(4)
+    const bare = decodeOne(calldata)
+    expect(bare.operation).toBe("extend_expiry")
+    expect(bare.expiresAt).toBe("0")
+    expect(bare.minLifetime).toBe("150")
+    expect(bare.resolvedExpiresAt).toBeNull()
+
+    const withBlock = decodeOne(calldata, { blockNumber: 222495n })
+    expect(withBlock.resolvedExpiresAt).toBe("222645")
+    expect(withBlock.expiresAtBlocks).toBe("222645")
   })
 
-  test("decodes large uint attribute values without precision loss", () => {
-    const big = 2n ** 64n - 1n
-    const op = createOp({
-      entityKey: ENTITY_KEY,
-      payload: "x",
-      contentType: "text/plain",
-      expiresAtBlocks: 1,
-    })
-    op.attributes = [encodeAttribute({ key: "big", value: big })]
-
-    const decoded = decodeCalldata(encodeExecute([op])).operations[0]!
-    expect(decoded.attributes[0]!.value).toBe(big.toString())
-  })
-
-  test("labels unknown operation types instead of misreporting them", () => {
-    const op = emptyOp(99, ENTITY_KEY)
-    const decoded = decodeCalldata(encodeExecute([op])).operations[0]!
-    expect(decoded.operation).toBe("unknown(99)")
-  })
-
-  test("renders undecodable attribute values as one valid hex string", () => {
-    const op = createOp({
-      entityKey: ENTITY_KEY,
-      payload: "x",
-      contentType: "text/plain",
-      expiresAtBlocks: 1,
-    })
-    op.attributes = [
-      // 0xff is never valid UTF-8, so the string branch falls back to hex
-      rawAttribute("broken", 2, new Uint8Array([0xff])),
-      rawAttribute("alien", 99, new Uint8Array([0x01])),
-    ]
-
-    const decoded = decodeCalldata(encodeExecute([op])).operations[0]!
-    for (const attr of decoded.attributes) {
-      expect(attr.value).toMatch(/^0x[0-9a-f]{256}$/)
+  test("a permanent entity keeps its exact expiry instead of rounding to a wrong number", () => {
+    // arkiv-reth-executor decode.rs:167 expresses permanence as expiresAt = u64::MAX. It is
+    // a normal successful value, and Number() renders it 18446744073709552000: wrong by 385
+    // and past the int8 ceiling of the indexer's expires_at_blocks column.
+    const u64Max = 2n ** 64n - 1n
+    const op = decodeOne(encodeExecute([createOp({ expiresAt: u64Max })]), { blockNumber: 222_498n })
+    for (const field of [op.expiresAt, op.resolvedExpiresAt, op.expiresAtBlocks]) {
+      expect(field).toBe("18446744073709551615")
+      expect(field).not.toBe(String(Number(u64Max)))
     }
-    expect(decoded.attributes[1]!.valueTypeName).toBe("unknown")
+    expect(op.minLifetime).toBe("0")
   })
 
-  test("rejects calldata for a different function", () => {
-    expect(() => decodeCalldata("0xa9059cbb")).toThrow(DecodeError)
+  test("decodes a transfer_ownership and checksums the new owner", () => {
+    const op = decodeOne(encodeExecute([transferOp(OTHER_KEY, NEW_OWNER)]))
+    expect(op.operation).toBe("transfer_ownership")
+    expect(op.entityKey).toBe(OTHER_KEY)
+    expect(op.newOwner).toBe(NEW_OWNER)
+  })
+
+  test("decodes a delete", () => {
+    const op = decodeOne(encodeExecute([deleteOp(ENTITY_KEY)]))
+    expect(op.operation).toBe("delete")
+    expect(op.entityKey).toBe(ENTITY_KEY)
+    expect(op.attributes).toEqual([])
+  })
+
+  test("keeps the count and order of a mixed batch", () => {
+    const result = decodeCalldata(
+      encodeExecute([
+        createOp({ minLifetime: 30n }),
+        patchOp(ENTITY_KEY, [attr.str("batched", "yes")]),
+        deleteOp(OTHER_KEY),
+      ]),
+    )
+    expect(result.operationCount).toBe(3)
+    expect(result.operations.map((op) => op.operation)).toEqual(["create", "patch", "delete"])
+    expect(result.operations.map((op) => op.index)).toEqual([0, 1, 2])
   })
 })
 
-describe("decodeArkivTransaction", () => {
-  test("accepts bare calldata", () => {
-    const data = encodeExecute([emptyOp(EntityOperationType.Delete, ENTITY_KEY)])
-    expect(data.startsWith(EXECUTE_SELECTOR)).toBe(true)
-    const result = decodeArkivTransaction(data)
-    expect(result.operations[0]!.operation).toBe("delete")
-    expect(result.to).toBeUndefined()
+describe("attribute values", () => {
+  function attributeFor(a: ReturnType<typeof attr.str>) {
+    return decodeOne(encodeExecute([patchOp(ENTITY_KEY, [a])])).attributes[0]!
+  }
+
+  test("renders every known value type", () => {
+    expect(attributeFor(attr.bool("b", true)).value).toBe("true")
+    expect(attributeFor(attr.bool("b", false)).value).toBe("false")
+    expect(attributeFor(attr.i32("i", 10)).value).toBe("10")
+    expect(attributeFor(attr.i32("i", -1)).value).toBe("-1")
+    expect(attributeFor(attr.i32("i", -2147483648)).value).toBe("-2147483648")
+    expect(attributeFor(attr.u64("u", 2n ** 64n - 1n)).value).toBe("18446744073709551615")
+    expect(attributeFor(attr.u256("u", 2n ** 256n - 1n)).value).toBe(
+      "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    )
+    expect(attributeFor(attr.dec("d", 1_500_000_000_000_000_000n)).value).toBe("1.5")
+    expect(attributeFor(attr.dec("d", -250_000_000_000_000_000n)).value).toBe("-0.25")
+    expect(attributeFor(attr.dec("d", 1_000_000_000_000_000_000n)).value).toBe("1")
+    expect(attributeFor(attr.bytes32("h", ENTITY_KEY)).value).toBe(ENTITY_KEY)
+    expect(attributeFor(attr.key("k", OTHER_KEY)).value).toBe(OTHER_KEY)
+    expect(attributeFor(attr.addr("a", NEW_OWNER)).value).toBe(NEW_OWNER)
+    expect(attributeFor(attr.str("s", "hello")).value).toBe("hello")
+    expect(attributeFor(attr.bytes("z", new Uint8Array([0xff, 0x00]))).value).toBe("0xff00")
   })
 
-  test("accepts a serialized EIP-1559 transaction and reports the target", () => {
-    const data = encodeExecute([emptyOp(EntityOperationType.Delete, ENTITY_KEY)])
+  test("names value types by the arkiv-bindings vocabulary", () => {
+    // Type 2 is i32. It is a plausible-looking number to read as a string type, and doing
+    // so records the wrong type downstream without failing anything.
+    expect(attributeFor(attr.i32("i", 1)).valueTypeName).toBe("i32")
+    expect(attributeFor(attr.str("s", "x")).valueTypeName).toBe("str")
+  })
+
+  test("rejects a non-canonical i32 sign extension", () => {
+    // 0xFF fill with a positive low word: the chain would refuse this.
+    const bad = { name: toHex("i", { size: 32 }), typeId: 2, value: `0x${"ff".repeat(28)}00000001` as const }
+    const decoded = attributeFor(bad)
+    expect(decoded.valueTypeName).toBe("invalid")
+    expect(decoded.error).toContain("sign extension")
+    expect(decoded.value).toBe(bad.value)
+  })
+
+  test("rejects a word type whose value is not 32 bytes", () => {
+    const bad = { name: toHex("u", { size: 32 }), typeId: 3, value: "0x01" as const }
+    const decoded = attributeFor(bad)
+    expect(decoded.valueTypeName).toBe("invalid")
+    expect(decoded.error).toContain("32 bytes")
+  })
+
+  test("rejects non-zero padding on a u64", () => {
+    const bad = { name: toHex("u", { size: 32 }), typeId: 3, value: `0x01${"00".repeat(31)}` as const }
+    expect(attributeFor(bad).valueTypeName).toBe("invalid")
+  })
+
+  test("rejects a tombstone that carries a value", () => {
+    const bad = { name: toHex("t", { size: 32 }), typeId: 0, value: "0x01" as const }
+    expect(attributeFor(bad).valueTypeName).toBe("invalid")
+  })
+
+  test("records an unfamiliar type id instead of failing the whole decode", () => {
+    // The type set is an open enum. Halting an indexer on one unknown value is worse
+    // than recording it, so this stays soft while struct-level failures stay loud.
+    const alien = { name: toHex("x", { size: 32 }), typeId: 77, value: word(5n) }
+    const decoded = attributeFor(alien)
+    expect(decoded.valueTypeName).toBe("unknown")
+    expect(decoded.value).toBe(word(5n))
+    expect(decoded.valueType).toBe(77)
+  })
+
+  test("omits the payload hex above the limit but keeps the size", () => {
+    const big = new Uint8Array(9000).fill(0x41)
+    const op = decodeOne(encodeExecute([createOp({ attributes: [attr.bytes("$payload", big)] })]))
+    expect(op.payload.size).toBe(9000)
+    expect(op.payload.truncated).toBe(true)
+    expect(op.payload.hex).toBeUndefined()
+    expect(decodeOne(encodeExecute([createOp({ attributes: [attr.bytes("$payload", big)] })]), {
+      payloadHexLimit: 16_384,
+    }).payload.hex).toBeDefined()
+  })
+
+  test("warns when $payload is a tombstone rather than reporting a payload", () => {
+    const result = decodeCalldata(encodeExecute([patchOp(ENTITY_KEY, [attr.tombstone("$payload")])]))
+    expect(result.operations[0]!.payload).toEqual({ size: 0, present: true })
+    expect(result.warnings?.join(" ")).toContain("$payload is a tombstone")
+  })
+})
+
+describe("shapes the chain refuses are warned about, not passed off as valid", () => {
+  // The decoder already states the principle: accepting something here would report what
+  // the chain would have refused. These four got past it.
+  function warningsFor(op: ReturnType<typeof patchOp>): string {
+    return decodeCalldata(encodeExecute([op])).warnings?.join(" | ") ?? ""
+  }
+
+  test("a str above the 128 byte limit is flagged", () => {
+    expect(warningsFor(patchOp(ENTITY_KEY, [attr.str("long", "a".repeat(200))]))).toContain(
+      "is 200 bytes, above the 128 byte protocol limit",
+    )
+    expect(warningsFor(patchOp(ENTITY_KEY, [attr.str("ok", "a".repeat(128))]))).toBe("")
+  })
+
+  test("a patch gets the attribute count check a create already had", () => {
+    const many = Array.from({ length: 40 }, (_, i) => attr.i32(`a${String(i).padStart(2, "0")}`, i))
+    expect(warningsFor(patchOp(ENTITY_KEY, many))).toContain("40 attributes, above the 32 attribute protocol limit")
+    const create = decodeCalldata(encodeExecute([createOp({ attributes: many })]))
+    expect(create.warnings?.join(" ")).toContain("40 attributes, above the 32 attribute protocol limit")
+  })
+
+  test("unsorted and duplicate attribute names are flagged", () => {
+    expect(warningsFor(patchOp(ENTITY_KEY, [attr.i32("b", 1), attr.i32("a", 2)]))).toContain(
+      "AttributesNotSorted",
+    )
+    expect(warningsFor(patchOp(ENTITY_KEY, [attr.i32("a", 1), attr.i32("a", 2)]))).toContain(
+      "appears more than once",
+    )
+    expect(warningsFor(patchOp(ENTITY_KEY, [attr.i32("a", 1), attr.i32("b", 2)]))).toBe("")
+  })
+
+  test("a second $payload does not silently rewrite the size the pipeline stores", () => {
+    const op = patchOp(ENTITY_KEY, [
+      attr.bytes("$payload", new Uint8Array(4)),
+      attr.bytes("$payload", new Uint8Array(9)),
+    ])
+    const result = decodeCalldata(encodeExecute([op]))
+    expect(result.operations[0]!.payload.size).toBe(9)
+    expect(result.warnings?.join(" ")).toContain("$payload appears more than once")
+  })
+})
+
+describe("undecodable calldata is recorded, never thrown", () => {
+  // Anyone can send these bytes to the registry. The node reverts the transaction, but it
+  // stays in the block and the indexer must still get past it, so none of them may throw.
+  test("an unknown operation tag becomes a row, keeping the raw tag", () => {
+    const result = decodeCalldata(encodeExecute([{ operation: 9, operationData: "0x" }]))
+    const op = result.operations[0]!
+    expect(op.undecodable?.code).toBe("UNKNOWN_OPERATION_TAG")
+    expect(op.operationType).toBe(9)
+    expect(op.operation).toBe("unknown(9)")
+    expect(op.payload.size).toBe(0)
+    expect(op.attributes).toEqual([])
+  })
+
+  test("operationData that does not match the struct becomes a row", () => {
+    const calldata = encodeExecute([{ operation: ArkivOperationTag.Delete, operationData: "0x1234" }])
+    const op = decodeCalldata(calldata).operations[0]!
+    expect(op.undecodable?.code).toBe("MALFORMED_OPERATION_DATA")
+    // The tag claims delete, but a struct we could not parse is not proof a delete happened.
+    expect(op.operation).toBe("unknown(5)")
+    expect(op.operationType).toBe(ArkivOperationTag.Delete)
+  })
+
+  test("one bad operation does not cost the batch its good ones", () => {
+    const result = decodeCalldata(
+      encodeExecute([deleteOp(ENTITY_KEY), { operation: 6, operationData: "0x" }, deleteOp(OTHER_KEY)]),
+    )
+    expect(result.operations.map((op) => op.operation)).toEqual(["delete", "unknown(6)", "delete"])
+    expect(result.operations.map((op) => op.undecodable?.code)).toEqual([
+      undefined,
+      "UNKNOWN_OPERATION_TAG",
+      undefined,
+    ])
+    expect(result.operations[2]!.entityKey).toBe(OTHER_KEY)
+  })
+
+  test("a correct selector with a broken argument block is an empty batch, not a throw", () => {
+    const result = decodeCalldata(`${EXECUTE_SELECTOR}deadbeef`)
+    expect(result.undecodable?.code).toBe("MALFORMED_CALLDATA")
+    expect(result.operationCount).toBe(0)
+    expect(result.operations).toEqual([])
+    expect(result.selector).toBe(EXECUTE_SELECTOR)
+  })
+
+  test("a non-canonical encoding is reported as a warning, not a failure", () => {
+    // Same delete, but with 32 bytes of trailing junk the canonical encoder would not emit.
+    const canonical = deleteOp(ENTITY_KEY)
+    const padded = { operation: canonical.operation, operationData: `${canonical.operationData}${"00".repeat(32)}` as const }
+    const result = decodeCalldata(encodeExecute([padded]))
+    expect(result.operations[0]!.entityKey).toBe(ENTITY_KEY)
+    expect(result.warnings?.join(" ")).toContain("not canonically encoded")
+  })
+})
+
+describe("selector dispatch", () => {
+  test("routes registry execute() calldata to the decoder", () => {
+    const result = decodeArkivTransaction(encodeExecute([deleteOp(ENTITY_KEY)])) as DecodedTransaction
+    expect(result.selector).toBe(EXECUTE_SELECTOR)
+    expect(result.operations[0]!.operation).toBe("delete")
+  })
+
+  test("real generation-1 calldata answers the same way, bare or inside a transaction", () => {
+    // The serialized form is not redundant. It is the one that caught a corrupt test
+    // vector: viem left-pads odd-length hex, so a blob missing one character re-encoded
+    // to a shifted selector and came back UNKNOWN_SELECTOR. The status rule alone cannot
+    // see that, because 400 is a legal answer, so assert which answer this gets.
+    const bare = decodeArkivTransaction(RETIRED_GENERATION_CALLDATA) as DecodedTransaction
+    expect(bare.undecodable?.code).toBe("RETIRED_GENERATION")
+
     const serialized = serializeTransaction({
       type: "eip1559",
       chainId: 60138453025,
       to: ARKIV_ADDRESS,
-      nonce: 7,
+      nonce: 0,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+      gas: 200_000n,
+      data: RETIRED_GENERATION_CALLDATA,
+    })
+    const fromTx = decodeArkivTransaction(serialized) as DecodedTransaction
+    expect(fromTx.undecodable?.code).toBe("RETIRED_GENERATION")
+    expect(fromTx.to?.toLowerCase()).toBe(ARKIV_ADDRESS.toLowerCase())
+  })
+
+  test("generation-1 calldata is a named gap, not a 400 and not a decode", () => {
+    // The judgement call, executable. These 4 bytes are the registry's own execute, so
+    // "not Arkiv calldata" would be false; the ABI behind them is gone, so a decode is
+    // impossible. It returns rather than throws, which is what makes it a 200, and the
+    // gap names the selector so a legacy chain reappearing is visible as itself.
+    const result = decodeArkivTransaction(`${RETIRED_EXECUTE_SELECTOR}${"00".repeat(64)}`) as DecodedTransaction
+    expect(result.undecodable?.code).toBe("RETIRED_GENERATION")
+    expect(result.selector).toBe(RETIRED_EXECUTE_SELECTOR)
+    expect(result.operationCount).toBe(0)
+    expect(result.operations).toEqual([])
+  })
+
+  test("accepts a serialized transaction carrying registry calldata", () => {
+    const serialized = serializeTransaction({
+      type: "eip1559",
+      chainId: 7733102,
+      to: ARKIV_ADDRESS,
+      nonce: 1,
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n,
-      gas: 100_000n,
-      data,
+      gas: 200_000n,
+      data: encodeExecute([deleteOp(ENTITY_KEY)]),
     })
-
     const result = decodeArkivTransaction(serialized)
     expect(result.to?.toLowerCase()).toBe(ARKIV_ADDRESS.toLowerCase())
     expect(result.warning).toBeUndefined()
     expect(result.operations[0]!.operation).toBe("delete")
   })
 
-  test("warns when a serialized transaction targets a different contract", () => {
-    const data = encodeExecute([emptyOp(EntityOperationType.Delete, ENTITY_KEY)])
+  test("bare calldata warns about a foreign target the caller named", () => {
+    // The serialized path warned and the bare path did not, though the caller is telling us
+    // the same thing either way.
+    const data = encodeExecute([deleteOp(ENTITY_KEY)])
+    const elsewhere = decodeArkivTransaction(data, { to: NEW_OWNER })
+    expect(elsewhere.to).toBe(NEW_OWNER)
+    expect(elsewhere.warning).toContain("is not the known Arkiv registry")
+
+    const registry = decodeArkivTransaction(data, { to: ARKIV_ADDRESS })
+    expect(registry.warning).toBeUndefined()
+    expect(decodeArkivTransaction(data).to).toBeUndefined()
+  })
+
+  test("reports a registry read-only call as a call with no operations", () => {
+    const result = decodeArkivTransaction(`0x36917bfd${"00".repeat(32)}`) as DecodedViewCall
+    expect(result.functionName).toBe("entityNonce")
+    expect(result.operations).toEqual([])
+    expect(result.operationCount).toBe(0)
+  })
+
+  test("an unknown selector on unknown calldata stays a skippable 400-class error", () => {
+    const error = (() => {
+      try {
+        decodeArkivTransaction(`0xdeadbeef${"00".repeat(32)}`)
+      } catch (e) {
+        return e as UnknownSelectorError
+      }
+    })()
+    expect(error).toBeInstanceOf(UnknownSelectorError)
+    expect(error!.targetIsRegistry).toBe(false)
+    expect(error!.selector).toBe("0xdeadbeef")
+    // Named, but not claimed as a decoder gap: we do not know it reached the registry.
+    expect(error!.code).toBe("NOT_ARKIV_CALLDATA")
+  })
+
+  test("an ordinary token transfer is foreign traffic, not a decoder gap", () => {
+    // Every well-formed EVM call is word-aligned, so shape cannot separate the two. Only
+    // the target can, and a caller sizing foreign traffic by NOT_ARKIV_CALLDATA has to see
+    // this one in that bucket.
+    const transfer = `0xa9059cbb${"00".repeat(31)}11${"00".repeat(31)}2a` as const
+    try {
+      decodeArkivTransaction(transfer)
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect((e as DecodeError).code).toBe("NOT_ARKIV_CALLDATA")
+    }
+    try {
+      decodeArkivTransaction(transfer, { to: ARKIV_ADDRESS })
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect((e as DecodeError).code).toBe("UNKNOWN_SELECTOR")
+    }
+  })
+
+  test("an unknown selector aimed at the registry is flagged as a decoder gap", () => {
+    const error = (() => {
+      try {
+        decodeArkivTransaction(`0xdeadbeef${"00".repeat(32)}`, { to: ARKIV_ADDRESS })
+      } catch (e) {
+        return e as UnknownSelectorError
+      }
+    })()
+    expect(error!.targetIsRegistry).toBe(true)
+    expect(error!.message).toContain(ARKIV_ADDRESS)
+  })
+
+  test("a serialized transaction to the registry with an unknown selector is flagged too", () => {
     const serialized = serializeTransaction({
       type: "eip1559",
-      chainId: 1,
-      to: NEW_OWNER,
-      nonce: 0,
-      maxFeePerGas: 1n,
-      maxPriorityFeePerGas: 1n,
-      gas: 21_000n,
-      data,
-    })
-
-    const result = decodeArkivTransaction(serialized)
-    expect(result.warning).toContain(NEW_OWNER)
-  })
-
-  test("rejects non-hex input", () => {
-    expect(() => decodeArkivTransaction("not hex")).toThrow(DecodeError)
-  })
-
-  test("rejects hex that is neither execute calldata nor a transaction", () => {
-    expect(() => decodeArkivTransaction(toHex("garbage"))).toThrow(DecodeError)
-  })
-
-  test("rejects a serialized transaction calling another function", () => {
-    const serialized = serializeTransaction({
-      type: "eip1559",
-      chainId: 1,
+      chainId: 7733102,
       to: ARKIV_ADDRESS,
       nonce: 0,
       maxFeePerGas: 1n,
       maxPriorityFeePerGas: 1n,
       gas: 21_000n,
-      data: "0xa9059cbb0000000000000000000000000000000000000000000000000000000000000000",
+      data: `0xdeadbeef${"00".repeat(32)}`,
     })
-    expect(() => decodeArkivTransaction(serialized)).toThrow(DecodeError)
+    try {
+      decodeArkivTransaction(serialized)
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnknownSelectorError)
+      expect((e as UnknownSelectorError).targetIsRegistry).toBe(true)
+    }
+  })
+
+  test("input that is not hex at all is a plain DecodeError", () => {
+    try {
+      decodeArkivTransaction("not hex")
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect(e).toBeInstanceOf(DecodeError)
+      expect((e as DecodeError).message).toContain("0x-prefixed hex string")
+    }
+  })
+
+  test("data too short to carry a selector is a plain DecodeError", () => {
+    try {
+      decodeArkivTransaction("0x1234")
+      throw new Error("expected a throw")
+    } catch (e) {
+      expect(e).toBeInstanceOf(DecodeError)
+      expect(e).not.toBeInstanceOf(UnknownSelectorError)
+      expect((e as DecodeError).code).toBe("NOT_ARKIV_CALLDATA")
+    }
+  })
+})
+
+describe("resolveExpiry", () => {
+  const U64_MAX = 2n ** 64n - 1n
+
+  test("takes the later of the absolute and the relative expiry", () => {
+    expect(resolveExpiry(0n, 900n, 241_669n)).toBe(242_569n)
+    expect(resolveExpiry(300_000n, 900n, 241_669n)).toBe(300_000n)
+    expect(resolveExpiry(242_000n, 900n, 241_669n)).toBe(242_569n)
+  })
+
+  test("saturates at u64::MAX instead of naming a block that cannot exist", () => {
+    // decode.rs:168 adds with checked_add and reverts with ExpiryOverflow, so 222498 +
+    // u64::MAX is not a block the chain ever records; the plain sum would report
+    // 18446744073709774113.
+    expect(resolveExpiry(0n, U64_MAX, 222_498n)).toBe(U64_MAX)
+    expect(222_498n + U64_MAX).toBeGreaterThan(U64_MAX)
+  })
+
+  test("warns for the two expiries the executor refuses", () => {
+    const overflow = decodeCalldata(encodeExecute([extendOp(ENTITY_KEY, 0n, U64_MAX)]), {
+      blockNumber: 222_498n,
+    })
+    expect(overflow.warnings?.join(" ")).toContain("ExpiryOverflow")
+    expect(overflow.operations[0]!.resolvedExpiresAt).toBe(U64_MAX.toString())
+
+    // expiresAt 0 and minLifetime 0 resolve to the current block, which is not in the future.
+    const dead = decodeCalldata(encodeExecute([createOp({})]), { blockNumber: 222_498n })
+    expect(dead.warnings?.join(" ")).toContain("ExpiryDeadOnArrival")
+
+    const fine = decodeCalldata(encodeExecute([createOp({ minLifetime: 30n })]), {
+      blockNumber: 222_498n,
+    })
+    expect(fine.warnings).toBeUndefined()
   })
 })

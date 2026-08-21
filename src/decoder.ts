@@ -1,5 +1,5 @@
 /**
- * Selector dispatch, and the entry point every caller imports.
+ * Selector dispatch, and the entry point src/server.ts calls.
  *
  * Calldata gets exactly two answers here: a DecodeError the caller skips, or a result,
  * marked undecodable when we could not read it. Nothing a stranger puts in a transaction
@@ -9,48 +9,69 @@ import { type Address, type Hex, getAddress, parseTransaction } from "viem"
 import {
   ARKIV_ADDRESS,
   type ArkivViewFunctionName,
-  EXECUTE_V2_SELECTOR,
-  LEGACY_EXECUTE_SELECTOR,
+  EXECUTE_SELECTOR,
+  RETIRED_EXECUTE_SELECTOR,
   VIEW_FUNCTION_NAMES,
 } from "./abi"
 import { isHexString } from "./bytes"
-import { type DecodedTransaction, decodeCalldata } from "./decodeLegacy"
-import {
-  type DecodeOptions,
-  type DecodedTransactionV2,
-  type DecodedViewCall,
-  decodeCalldataV2,
-} from "./decodeV2"
+import { type DecodeOptions, type DecodedTransaction, type DecodedViewCall, decodeCalldata } from "./decode"
 import { DecodeError, UnknownSelectorError, recordGap } from "./gaps"
 
-export type DecodeResult = DecodedTransaction | DecodedTransactionV2 | DecodedViewCall
+export type DecodeResult = DecodedTransaction | DecodedViewCall
 
 const VIEW_FUNCTION_BY_SELECTOR: Record<string, ArkivViewFunctionName | undefined> = VIEW_FUNCTION_NAMES
 
-/** Selectors this service decodes, newest generation first. */
-export const KNOWN_SELECTORS: Hex[] = [EXECUTE_V2_SELECTOR, LEGACY_EXECUTE_SELECTOR]
+/** Selectors this service decodes. One ABI, so one entry. */
+export const KNOWN_SELECTORS: Hex[] = [EXECUTE_SELECTOR]
 
 function selectorOf(data: Hex): Hex {
   return data.slice(0, 10).toLowerCase() as Hex
+}
+
+/**
+ * Generation-1 `execute(...)`: registry traffic we can name and cannot read.
+ *
+ * A recorded gap at 200 with an empty batch, not a 400, and the difference is what the
+ * caller is told. 400 means "not Arkiv calldata", which is false here: these 4 bytes are
+ * the registry's own execute, pinned in src/abi.ts, and the production caller sends no
+ * `to`, so a 400 would carry code NOT_ARKIV_CALLDATA and land this in the bucket anyone
+ * counting foreign traffic reads. It is the same shape a malformed argument block already
+ * gets, for the same reason: the selector is ours, there are no operations to report, and
+ * an empty batch is a row the indexer records and moves past.
+ *
+ * The subject is the selector, so a legacy chain reappearing is a climbing count next to
+ * 0xba8ccf92 on GET /api/selectors rather than a number folded in with every unknown
+ * selector on the chain.
+ */
+function retiredGeneration(): DecodedTransaction {
+  return {
+    functionName: "execute",
+    selector: RETIRED_EXECUTE_SELECTOR,
+    undecodable: recordGap(
+      {
+        code: "RETIRED_GENERATION",
+        message:
+          `Calldata carries the generation-1 execute() selector ${RETIRED_EXECUTE_SELECTOR}. That ABI was removed: ` +
+          "no live network runs it. If this count is climbing, a generation-1 chain is being indexed.",
+      },
+      RETIRED_EXECUTE_SELECTOR,
+    ),
+    operationCount: 0,
+    operations: [],
+  }
 }
 
 function decodeBySelector(data: Hex, options: DecodeOptions): DecodeResult | null {
   if (data.length < 10) return null
   const selector = selectorOf(data)
 
-  if (selector === EXECUTE_V2_SELECTOR) return decodeCalldataV2(data, options)
-  if (selector === LEGACY_EXECUTE_SELECTOR.toLowerCase()) {
-    const decoded = decodeCalldata(data)
-    decoded.abi = "legacy"
-    decoded.selector = LEGACY_EXECUTE_SELECTOR
-    return decoded
-  }
+  if (selector === EXECUTE_SELECTOR) return decodeCalldata(data, options)
+  if (selector === RETIRED_EXECUTE_SELECTOR) return retiredGeneration()
 
   const viewName = VIEW_FUNCTION_BY_SELECTOR[selector]
   if (viewName !== undefined) {
     return {
       functionName: viewName,
-      abi: "v2",
       selector,
       operationCount: 0,
       operations: [],
@@ -73,7 +94,7 @@ function decodeBySelector(data: Hex, options: DecodeOptions): DecodeResult | nul
 function unknownCall(data: Hex, to: Address | null): DecodeError {
   if (data.length < 10) {
     return new DecodeError(
-      `Data is neither Arkiv execute() calldata (selectors ${KNOWN_SELECTORS.join(", ")}) nor a parseable serialized transaction`,
+      `Data is neither Arkiv execute() calldata (selector ${EXECUTE_SELECTOR}) nor a parseable serialized transaction`,
     )
   }
   const targetIsRegistry = to !== null && to.toLowerCase() === ARKIV_ADDRESS.toLowerCase()
@@ -96,8 +117,8 @@ function withTarget(decoded: DecodeResult, to: Address | null): DecodeResult {
 }
 
 /**
- * Decode either bare `execute(...)` calldata (either ABI generation) or a full
- * RLP-serialized transaction (signed or unsigned) whose data is an Arkiv registry call.
+ * Decode either bare `execute(...)` calldata or a full RLP-serialized transaction (signed
+ * or unsigned) whose data is an Arkiv registry call.
  */
 export function decodeArkivTransaction(input: string, options: DecodeOptions = {}): DecodeResult {
   const trimmed = input.trim()
@@ -126,49 +147,3 @@ export function decodeArkivTransaction(input: string, options: DecodeOptions = {
   if (!decoded) throw unknownCall(tx.data, to)
   return withTarget(decoded, to)
 }
-
-// ---------------------------------------------------------------------------
-// Public surface. One import path for callers, whichever file the code lives in.
-// ---------------------------------------------------------------------------
-
-export {
-  ARKIV_ADDRESS,
-  AttributeValueType,
-  ENTITY_EXECUTE_ABI,
-  EXECUTE_SELECTOR,
-  EXECUTE_V2_SELECTOR,
-  EntityOperationType,
-  LEGACY_EXECUTE_SELECTOR,
-} from "./abi"
-export { decodeIdent32 } from "./bytes"
-export {
-  type DecoderGap,
-  type DecoderGapCode,
-  type DecoderGapTally,
-  DecodeError,
-  UnknownSelectorError,
-  decoderGaps,
-  recordGap,
-} from "./gaps"
-export {
-  BLOCK_TIME,
-  type DecodedAttribute,
-  type DecodedOperation,
-  type DecodedTransaction,
-  decodeCalldata,
-} from "./decodeLegacy"
-export {
-  DEFAULT_PAYLOAD_HEX_LIMIT,
-  type DecodeOptions,
-  type DecodedAttributeV2,
-  type DecodedOperationV2,
-  type DecodedPayload,
-  type DecodedTransactionV2,
-  type DecodedViewCall,
-  type UnknownOperationName,
-  creationFlagNames,
-  decodeAttributeV2,
-  decodeCalldataV2,
-  decodeOperationV2,
-  resolveExpiry,
-} from "./decodeV2"
