@@ -1,6 +1,6 @@
 {
   "name": "arkiv-transaction-decoder",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Bun server that decodes Arkiv entity-registry transaction data into Arkiv operations",
   "type": "module",
   "scripts": {

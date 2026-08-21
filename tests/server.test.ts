@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { handleRequest } from "../src/server"
+import { SERVICE_NAME, SERVICE_VERSION } from "../src/version"
 import { EntityOperationType } from "../src/decoder"
 import {
   contentTypeCell,
@@ -33,8 +34,8 @@ describe("server", () => {
   test("GET / returns usage info", async () => {
     const { status, body } = await call("/")
     expect(status).toBe(200)
-    expect(body.service).toBe("arkiv-transaction-decoder")
-    expect(body.version).toBe("v0.2.0")
+    expect(body.service).toBe(SERVICE_NAME)
+    expect(body.version).toBe(SERVICE_VERSION)
     expect(body.endpoints["GET /api/version"]).toBe("service version")
   })
 
@@ -48,8 +49,8 @@ describe("server", () => {
     const { status, body } = await call("/api/version")
     expect(status).toBe(200)
     expect(body).toEqual({
-      service: "arkiv-transaction-decoder",
-      version: "v0.2.0",
+      service: SERVICE_NAME,
+      version: SERVICE_VERSION,
     })
   })
 
