@@ -1,0 +1,39 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "301422594741892035395901909940662583783",
+        "creationFlags": 0,
+        "expiresAt": "18446744073709551615",
+        "minLifetime": "0",
+        "permanent": true,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "body",
+            "typeId": 7,
+            "type": "bytes",
+            "indexed": false,
+            "value": null,
+            "size": 0,
+            "keccak256": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+          },
+          {
+            "name": "purpose",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "permanent_test",
+            "size": 14
+          }
+        ]
+      }
+    ]
+  }
+]

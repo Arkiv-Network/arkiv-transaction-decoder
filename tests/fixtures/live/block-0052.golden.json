@@ -1,0 +1,108 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "97313786535318885149533695547069695588",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 19,
+        "attributes": [
+          {
+            "name": "body",
+            "typeId": 7,
+            "type": "bytes",
+            "indexed": false,
+            "value": null,
+            "size": 19,
+            "keccak256": "0x0ca2054d45d0894df72dc73e554642da67522e36c46eed2758f31ba5b891255a"
+          },
+          {
+            "name": "purpose",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "batch_created",
+            "size": 13
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "batch-1793045559267",
+            "size": 19
+          }
+        ]
+      },
+      {
+        "operationType": 2,
+        "operation": "patch",
+        "entityKey": "0xe770acf0d215c8528fa370558939c4e2d6867395444e7848b6703b97d889c4b8",
+        "salt": null,
+        "creationFlags": null,
+        "expiresAt": null,
+        "minLifetime": null,
+        "permanent": null,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "purpose",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "batch_patched",
+            "size": 13
+          }
+        ]
+      },
+      {
+        "operationType": 5,
+        "operation": "delete",
+        "entityKey": "0x692204043c771fe340d6a2bca7a009784d5689296219d968cf9aed99857af329",
+        "salt": null,
+        "creationFlags": null,
+        "expiresAt": null,
+        "minLifetime": null,
+        "permanent": null,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": []
+      },
+      {
+        "operationType": 3,
+        "operation": "extend",
+        "entityKey": "0xbfce939f3097613b0a36db64b8ae73ba9471c1be7e3df1be66a99baf6b5db93e",
+        "salt": null,
+        "creationFlags": null,
+        "expiresAt": "0",
+        "minLifetime": "3600",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": []
+      },
+      {
+        "operationType": 4,
+        "operation": "transfer",
+        "entityKey": "0xb947100ea15f87f0431329c7ccedb2c4f92d4726a9d8d2715c190890ffade240",
+        "salt": null,
+        "creationFlags": null,
+        "expiresAt": null,
+        "minLifetime": null,
+        "permanent": null,
+        "newOwner": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        "bytesSize": 0,
+        "attributes": []
+      }
+    ]
+  }
+]

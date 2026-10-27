@@ -1,0 +1,30 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "333373214130806145467124779311361731690",
+        "creationFlags": 1,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "purpose",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "readonly_test",
+            "size": 13
+          }
+        ]
+      }
+    ]
+  }
+]

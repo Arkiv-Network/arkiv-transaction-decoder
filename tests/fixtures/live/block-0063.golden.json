@@ -1,0 +1,127 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "308297919847236523983080499030400106245",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 3,
+        "attributes": [
+          {
+            "name": "amount",
+            "typeId": 132,
+            "type": "u256",
+            "indexed": true,
+            "value": "0x100000000000000000000000000000000000000000000000000",
+            "size": 32
+          },
+          {
+            "name": "big",
+            "typeId": 131,
+            "type": "u64",
+            "indexed": true,
+            "value": "0x1fffffffffffff",
+            "size": 32
+          },
+          {
+            "name": "blob",
+            "typeId": 7,
+            "type": "bytes",
+            "indexed": false,
+            "value": null,
+            "size": 3,
+            "keccak256": "0xf1885eda54b7a053318cd41e2093220dab15d65381b1157a3633a83bfd5c9239"
+          },
+          {
+            "name": "count",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 42,
+            "size": 32
+          },
+          {
+            "name": "digest",
+            "typeId": 134,
+            "type": "bytes32",
+            "indexed": true,
+            "value": "0xdededededededededededededededededededededededededededededededede",
+            "size": 32
+          },
+          {
+            "name": "flagged",
+            "typeId": 129,
+            "type": "bool",
+            "indexed": true,
+            "value": true,
+            "size": 32
+          },
+          {
+            "name": "negative",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": -10,
+            "size": 32
+          },
+          {
+            "name": "parent",
+            "typeId": 138,
+            "type": "key",
+            "indexed": true,
+            "value": "0xabababababababababababababababababababababababababababababababab",
+            "size": 32
+          },
+          {
+            "name": "score",
+            "typeId": 133,
+            "type": "dec",
+            "indexed": true,
+            "value": "3.5",
+            "size": 32
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "attrs-1793045584440",
+            "size": 19
+          },
+          {
+            "name": "text",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "hello",
+            "size": 5
+          },
+          {
+            "name": "who",
+            "typeId": 137,
+            "type": "addr",
+            "indexed": true,
+            "value": "0x3ffcb8c66ba2a35df36d73b213399220fd59f42f",
+            "size": 32
+          },
+          {
+            "name": "zero",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 0,
+            "size": 32
+          }
+        ]
+      }
+    ]
+  }
+]

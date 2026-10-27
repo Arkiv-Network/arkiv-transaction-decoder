@@ -1,0 +1,47 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 2,
+        "operation": "patch",
+        "entityKey": "0x7c843d69df8b8f4e33ea1f29bc0a0b9df7906b023a0d43447ee128f5805e53ef",
+        "salt": null,
+        "creationFlags": null,
+        "expiresAt": null,
+        "minLifetime": null,
+        "permanent": null,
+        "newOwner": null,
+        "bytesSize": 13,
+        "attributes": [
+          {
+            "name": "body",
+            "typeId": 7,
+            "type": "bytes",
+            "indexed": false,
+            "value": null,
+            "size": 13,
+            "keccak256": "0x7fe4d11a6f2bed874122855aab1dd8cdaded0ddbbeb4b41660c4a1e7a4ef7cc6"
+          },
+          {
+            "name": "drop",
+            "typeId": 0,
+            "type": "tombstone",
+            "indexed": false,
+            "value": null,
+            "size": 0
+          },
+          {
+            "name": "level",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 2,
+            "size": 32
+          }
+        ]
+      }
+    ]
+  }
+]

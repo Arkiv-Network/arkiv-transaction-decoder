@@ -1,0 +1,110 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "157228350867761544724675611627625260249",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "Level",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 1,
+            "size": 32
+          },
+          {
+            "name": "MiXeDcAsE",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "c",
+            "size": 1
+          },
+          {
+            "name": "Uppercase",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "b",
+            "size": 1
+          },
+          {
+            "name": "dashed-name",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "f",
+            "size": 1
+          },
+          {
+            "name": "dotted.name",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "e",
+            "size": 1
+          },
+          {
+            "name": "level",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 2,
+            "size": 32
+          },
+          {
+            "name": "lowercase",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "a",
+            "size": 1
+          },
+          {
+            "name": "naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "h",
+            "size": 1
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "names-1793045660873",
+            "size": 19
+          },
+          {
+            "name": "under_scored",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "g",
+            "size": 1
+          },
+          {
+            "name": "with9digits",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "d",
+            "size": 1
+          }
+        ]
+      }
+    ]
+  }
+]

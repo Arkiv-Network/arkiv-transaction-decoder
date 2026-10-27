@@ -1,0 +1,46 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "338725631005155977110988068870101590906",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "category",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "docs",
+            "size": 4
+          },
+          {
+            "name": "level",
+            "typeId": 2,
+            "type": "i32",
+            "indexed": false,
+            "value": 7,
+            "size": 32
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "find-1793045495058",
+            "size": 18
+          }
+        ]
+      }
+    ]
+  }
+]

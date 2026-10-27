@@ -1,0 +1,76 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "203894194255443856415646293186514117417",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "role",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "parent",
+            "size": 6
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "predicted-1793045567305",
+            "size": 23
+          }
+        ]
+      },
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "302266128974534492302272671345158132501",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 0,
+        "attributes": [
+          {
+            "name": "parent",
+            "typeId": 138,
+            "type": "key",
+            "indexed": true,
+            "value": "0x8ccbe8c91ffbe774cef1e76f5af077fd9b89e691a797c1a902f9015b16b84b65",
+            "size": 32
+          },
+          {
+            "name": "role",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "child",
+            "size": 5
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "predicted-1793045567305",
+            "size": 23
+          }
+        ]
+      }
+    ]
+  }
+]

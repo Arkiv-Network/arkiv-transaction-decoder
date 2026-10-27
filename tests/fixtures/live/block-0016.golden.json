@@ -1,0 +1,71 @@
+[
+  {
+    "functionName": "execute",
+    "format": "udc",
+    "operations": [
+      {
+        "operationType": 1,
+        "operation": "create",
+        "entityKey": null,
+        "salt": "23664374352188590007044345904234168063",
+        "creationFlags": 0,
+        "expiresAt": "0",
+        "minLifetime": "1800",
+        "permanent": false,
+        "newOwner": null,
+        "bytesSize": 49,
+        "attributes": [
+          {
+            "name": "body",
+            "typeId": 7,
+            "type": "bytes",
+            "indexed": false,
+            "value": null,
+            "size": 49,
+            "keccak256": "0x66b978bb371b2ca0ed21099b45937b8b06faa1027e50fe05da6417489cb3f74f"
+          },
+          {
+            "name": "healthy",
+            "typeId": 129,
+            "type": "bool",
+            "indexed": true,
+            "value": true,
+            "size": 32
+          },
+          {
+            "name": "height",
+            "typeId": 3,
+            "type": "u64",
+            "indexed": false,
+            "value": "0x124f80",
+            "size": 32
+          },
+          {
+            "name": "level",
+            "typeId": 130,
+            "type": "i32",
+            "indexed": true,
+            "value": 42,
+            "size": 32
+          },
+          {
+            "name": "mimeType",
+            "typeId": 8,
+            "type": "str",
+            "indexed": false,
+            "value": "application/json",
+            "size": 16
+          },
+          {
+            "name": "tag",
+            "typeId": 136,
+            "type": "str",
+            "indexed": true,
+            "value": "health-1793045491029",
+            "size": 20
+          }
+        ]
+      }
+    ]
+  }
+]
