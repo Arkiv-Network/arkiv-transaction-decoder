@@ -54,6 +54,14 @@ describe("server", () => {
     })
   })
 
+  test("the reported version is the one package.json declares", async () => {
+    // Read the file afresh rather than through the module, so a version.ts that stopped deriving
+    // from package.json would be caught.
+    const pkg = JSON.parse(await Bun.file(`${import.meta.dir}/../package.json`).text())
+    expect(SERVICE_NAME).toBe(pkg.name)
+    expect(SERVICE_VERSION).toBe(`v${pkg.version}`)
+  })
+
   test("POST /api/decode decodes execute calldata from a JSON body", async () => {
     const { status, body } = await call("/api/decode", {
       method: "POST",
