@@ -1,18 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { handleRequest } from "../src/server"
 import { SERVICE_NAME, SERVICE_VERSION } from "../src/version"
-import { EntityOperationType } from "../src/decoder"
-import {
-  contentTypeCell,
-  createOp,
-  deleteOp,
-  encodeExecute,
-  encodeLegacyExecute,
-  legacyCreateOp,
-  legacyEmptyOp,
-  payloadCell,
-  strCell,
-} from "./encode"
+import { bytesCell, createOp, deleteOp, encodeExecute, strCell } from "./encode"
 
 const BASE = "http://localhost"
 const ENTITY_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as const
@@ -26,7 +15,7 @@ async function call(path: string, init?: RequestInit) {
 const createCalldata = encodeExecute([
   createOp({
     minLifetime: 100n,
-    attributes: [contentTypeCell("text/plain"), payloadCell("Hello Arkiv"), strCell("k", "v")],
+    attributes: [bytesCell("body", "Hello Arkiv"), strCell("k", "v")],
   }),
 ])
 
@@ -71,16 +60,19 @@ describe("server", () => {
 
     expect(status).toBe(200)
     expect(body.functionName).toBe("execute")
+    expect(body.format).toBe("udc")
     expect(body.operations).toHaveLength(1)
     expect(body.operations[0].operation).toBe("create")
-    expect(body.operations[0].payload).toEqual({ size: 11 })
-    expect(body.operations[0].contentType).toBe("text/plain")
-    expect(body.operations[0].expiresAtBlocks).toBe(100)
-    expect(body.operations[0].attributes[0]).toEqual({
-      key: "k",
-      valueType: 8,
-      valueTypeName: "str",
+    expect(body.operations[0].minLifetime).toBe("100")
+    expect(body.operations[0].bytesSize).toBe(11)
+    expect(body.operations[0].attributes[0].value).toBeNull()
+    expect(body.operations[0].attributes[1]).toEqual({
+      name: "k",
+      typeId: 0x88,
+      type: "str",
+      indexed: true,
       value: "v",
+      size: 1,
     })
   })
 
@@ -101,23 +93,15 @@ describe("server", () => {
     expect(body.status).toBe("ok")
   })
 
-  test("POST /api/decode decodes legacy calldata", async () => {
-    const data = encodeLegacyExecute([
-      legacyCreateOp({
-        entityKey: ENTITY_KEY,
-        payload: "Hello Arkiv",
-        contentType: "text/plain",
-        expiresAtBlocks: 100,
-      }),
-    ])
+  test("POST /api/decode answers 400 for the pre-UDC struct format", async () => {
+    // The 0xba8ccf92 execute() is no Arkiv call on a UDC chain, so it is refused like any other.
     const { status, body } = await call("/api/decode", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ data }),
+      body: JSON.stringify({ data: `0xba8ccf92${"00".repeat(64)}` }),
     })
-    expect(status).toBe(200)
-    expect(body.format).toBe("legacy")
-    expect(body.operations[0].operation).toBe("create")
+    expect(status).toBe(400)
+    expect(body.error).toContain("0xba8ccf92")
   })
 
   test("POST /api/decode accepts raw hex as text body", async () => {
@@ -132,7 +116,7 @@ describe("server", () => {
   })
 
   test("GET /api/decode?data=... works", async () => {
-    const data = encodeLegacyExecute([legacyEmptyOp(EntityOperationType.Delete, ENTITY_KEY)])
+    const data = encodeExecute([deleteOp(ENTITY_KEY)])
     const { status, body } = await call(`/api/decode?data=${data}`)
     expect(status).toBe(200)
     expect(body.operations[0].operation).toBe("delete")

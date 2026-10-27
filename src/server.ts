@@ -7,7 +7,8 @@ const USAGE = {
   endpoints: {
     "GET /api/health": "liveness check",
     "GET /api/version": "service version",
-    "POST /api/decode": 'body: {"data": "0x..."} (execute() calldata or serialized tx), or raw hex as text/plain',
+    "POST /api/decode":
+      'body: {"data": "0x..."} (execute() calldata or serialized tx), or raw hex as text/plain; answers the UDC operations, never bytes contents',
     "GET /api/decode?data=0x...": "same as POST, via query parameter",
   },
   note: "the /api prefix is optional: /decode is the same route as /api/decode",

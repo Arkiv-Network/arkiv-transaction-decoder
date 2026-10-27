@@ -10,5 +10,4 @@ tmp
 Dockerfile
 README.md
 tests
-sample-execute-calldata.txt
 tsconfig.json
