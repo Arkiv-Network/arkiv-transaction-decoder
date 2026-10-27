@@ -34,8 +34,9 @@ keccak256 alone. Fetch the content from the node (`arkiv_query` with `attributes
 you need it.
 
 The service accepts either bare `execute()` calldata or a full RLP-serialized transaction (signed
-or unsigned, legacy/2930/1559). Calldata in the pre-UDC struct format (selector `0xba8ccf92`) is
-not decoded: it answers `400` like any other call that is not an Arkiv `execute()`.
+or unsigned, legacy/2930/1559). It decodes exactly the calldata the node's `execute()` ABI layer
+accepts (see [What the node refuses](#what-the-node-refuses)) and answers `400` for anything else,
+including calldata in the pre-UDC struct format (selector `0xba8ccf92`).
 
 ## Run
 
@@ -127,20 +128,24 @@ applies them and emits their events in.
 
 | field           | type              | set by           | meaning                                                                                                     |
 | --------------- | ----------------- | ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `operationType` | number            | all              | the tag, 1–5; any other tag is reported, not refused                                                       |
-| `operation`     | string            | all              | `create`, `patch`, `extend`, `transfer`, `delete`, or `unknown(N)`                                          |
+| `operationType` | number            | all              | the tag, 1–5                                                                                                |
+| `operation`     | string            | all              | `create`, `patch`, `extend`, `transfer` or `delete`                                                         |
 | `entityKey`     | hex \| null       | all but create   | lowercase. A create's key is derived by the engine; pair creates with the `EntityCreated` logs in order    |
 | `salt`          | string \| null    | create           | the uint128 salt, decimal                                                                                   |
 | `creationFlags` | number \| null    | create           | bit 0 readonly, bit 1 permissionless extension                                                              |
 | `expiresAt`     | string \| null    | create, extend   | the absolute deadline as a block height, exact decimal; `"0"` when unset                                    |
 | `minLifetime`   | string \| null    | create, extend   | the lifetime floor in blocks from the landing block, exact decimal; `"0"` when unset                        |
-| `permanent`     | boolean \| null   | create, extend   | `expiresAt` is `18446744073709551615` (2^64−1), the expiry of an entity that never expires                  |
+| `permanent`     | boolean \| null   | create, extend   | the operation asks for permanence through `expiresAt` = `18446744073709551615` (2^64−1); see below          |
 | `newOwner`      | address \| null   | transfer         | lowercase                                                                                                   |
 | `bytesSize`     | number            | all              | bytes held by the operation's `bytes` attributes together; `0` when it has none                             |
 | `attributes`    | array             | all              | create: the attributes; patch: the mutations, tombstones included; otherwise `[]`                           |
+| `error`         | string            | when refused     | present only when the node would refuse the operation as a whole; see below                                 |
 
 The engine resolves an expiry pair at the landing block as `max(expiresAt, block + minLifetime)`;
-the decoder does not know the block, so it reports the pair as the calldata carries it.
+the decoder does not know the block, so it reports the pair as the calldata carries it. That is
+why only `permanent: true` is definitive: an entity is also permanent when `block + minLifetime`
+reaches 2^64−1 exactly, which takes the landing block to know. To tell for certain, resolve the
+pair against the block, or read the expiry from the operation's event.
 
 A **patch** lists only what it changes, in calldata order. Each entry with a type sets that
 attribute — adding it, or replacing its value, type and indexed flag with the ones given here —
@@ -182,12 +187,12 @@ An **extend**, a **transfer** and a **delete** (block 52):
 | ----------- | ------------------------------ | --------------------------------------------------------------------------------------------- |
 | `name`      | string                         | the attribute name; names are case-sensitive                                                  |
 | `typeId`    | number                         | the raw byte, indexed flag included                                                           |
-| `type`      | string                         | `typeId & 0x7f` as its tag; `tombstone` for `0`; `invalid(0x..)` for an id the node refuses   |
+| `type`      | string                         | `typeId & 0x7f` as its tag; `tombstone` for `0`; `invalid(0x..)` for a typeId the node refuses (`0x80`, `0x87`, an unknown type) |
 | `indexed`   | boolean                        | `typeId & 0x80`                                                                               |
-| `value`     | string \| number \| boolean \| null | see below; `null` for `bytes`, a tombstone and a malformed triple                         |
+| `value`     | string \| number \| boolean \| null | see below; `null` for `bytes`, a tombstone, an `invalid(0x..)` type and a value that does not decode |
 | `size`      | number                         | length of the value bytes as calldata carries them: 32 for a word type, the UTF-8 length of a str |
 | `keccak256` | hex                            | `bytes` only: keccak256 of the content                                                         |
-| `error`     | string                         | present only when the triple is malformed                                                     |
+| `error`     | string                         | present only when the node would refuse the triple; see below                                 |
 
 `value` is encoded exactly as the node's `arkiv_query` returns the same attribute, so the two
 compare with plain JSON equality:
@@ -203,20 +208,58 @@ compare with plain JSON equality:
 | `str`                    | the text                                         | `"hello"`                                        |
 | `bytes`                  | `null`; see `size` and `keccak256`               |                                                  |
 
-A triple the node would refuse does not fail the decode: it comes back with `value: null` and an
-`error` saying what is wrong, and the rest of the batch still decodes. That covers an `invalid(0x..)`
-`typeId` (`0x87`, an indexed `bytes`; `0x80`, a flagged tombstone; an unknown type), a value of the
-wrong width or out of range for its type, a str that is not UTF-8, longer than 128 bytes or holding
-control characters, a tombstone in a create or with a value, a `bytes` value over 128 KiB and a name
-that is not NUL-padded UTF-8 (reported as its hex). The node rejects such a transaction before it is
-mined, so a decoded chain transaction never has one.
+#### What the node refuses
+
+The node refuses a transaction before it is mined if any part of it breaks its rules, so a decoded
+chain transaction breaks none of them. The decoder still answers for calldata that has not been
+mined, and treats the rules in two tiers, as the node does.
+
+**Refused, `400`.** What the node's `execute()` ABI layer refuses (`InvalidArkivCalldata`,
+`UnsupportedArkivOperation`) is not an Arkiv call the node accepts, and no part of it is decoded:
+
+- input over 384 KiB (393216 bytes, the node's transaction cap), counting calldata or the whole
+  serialized transaction;
+- anything but the canonical ABI encoding, for the call and for each operation's struct: an offset
+  that is not where the canonical encoding puts it (so no aliasing), a word with bits set above its
+  type's width (`uint8` tag, typeId and flags, `uint64` expiry pair, `uint128` salt, `address`),
+  non-zero padding, or data after the end;
+- no operations, more than 128, an operation tag other than 1–5, or more than 32 attributes in one
+  operation;
+- hex that is not `0x`-prefixed or has an odd number of digits.
+
+**Flagged, `200`.** What the node refuses triple by triple (`decode_protocol_triples`,
+`validate`) comes back decoded, with an `error` on the triple or the operation, so a caller can show
+what is wrong. A triple's `error` is the first of these that applies, in the order the node checks:
+
+1. its name does not sort strictly after the previous triple's (byte order; this also catches
+   duplicates);
+2. its name is not NUL-padded UTF-8 (then `name` is the 32 bytes as hex), or is not a letter
+   followed by letters, digits, `.`, `-` or `_`;
+3. its typeId or value: an `invalid(0x..)` typeId, a word value that is not 32 bytes or out of
+   range for its type (a `bool` other than 0 or 1, an `i32` that is not sign-extended, a `u64` or
+   `addr` with high bits set), a `str` that is not UTF-8, longer than 128 bytes or holding a C0
+   control character or DEL, a `bytes` value over 128 KiB, a tombstone in a create, or a tombstone
+   with a value;
+4. its name contains `--` or is a reserved word of the query language (`and`, `or`, `not`, `true`,
+   `false`, `startswith`, `exists`, `typeof` and the ten type tags), in any case.
+
+`value` is `null` only when the value itself does not decode (rule 3) or is a `bytes`; a triple
+flagged for its name or its order keeps a value that decodes. An operation's `error` says its
+`creationFlags` sets bits other than 1 and 2, or its `bytes` values together hold more than
+128 KiB. The node also checks what only the chain state can tell (ownership, expiry, the size of
+the entity a patch produces); the decoder does not.
 
 #### Errors and serialized transactions
 
 - For a serialized transaction the response also includes `to` (lowercase), plus a `warning` when
   the target is not the known Arkiv registry address.
-- Decoding errors return `400` with `{"error": "..."}` — including calldata that is not an Arkiv
-  `execute()` call at all, which is how a caller tells registry traffic from everything else.
+- Input the node would refuse (above) returns `400` with `{"error": "..."}`, including calldata that
+  is not an Arkiv `execute()` call at all, which is how a caller tells registry traffic from
+  everything else. The message is fixed text: it never quotes the input.
+- A request body over 1 MiB returns `413` unread; the largest input the node accepts fits well
+  within it as JSON.
+- Anything else, a fault of the decoder rather than of the input, returns `500`. A caller should
+  retry it, not read it as "not Arkiv".
 
 ### `GET /api/health`
 
