@@ -39,6 +39,11 @@ export function bytesCell(name: string, content: string | Uint8Array): AbiAttrib
   return cell(name, AttributeTypeId.Bytes, toHex(bytes))
 }
 
+/** Cells in the strictly ascending byte order of their names, the order the node requires. */
+export function sorted(cells: AbiAttribute[]): AbiAttribute[] {
+  return [...cells].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+}
+
 /** A tombstone: the mutation that unsets an attribute, legal only in a patch. */
 export function tombstoneCell(name: string): AbiAttribute {
   return cell(name, AttributeTypeId.Tombstone, "0x")

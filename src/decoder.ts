@@ -1,14 +1,16 @@
 import {
   type Address,
   type Hex,
-  decodeAbiParameters,
-  decodeFunctionData,
+  bytesToBigInt,
+  encodeAbiParameters,
+  encodeFunctionData,
   hexToBytes,
   keccak256,
   parseAbi,
   parseAbiParameters,
   parseTransaction,
   toFunctionSelector,
+  toHex,
 } from "viem"
 
 export const ARKIV_ADDRESS = "0x4400000000000000000000000000000000000044" as Address
@@ -66,9 +68,16 @@ export const INDEXED_FLAG = 0x80
 /** The `expiresAt` of an entity that never expires: the largest uint64. */
 export const PERMANENT_EXPIRES_AT = 2n ** 64n - 1n
 
+// The node's limits (crates/arkiv-node/src/signed/protocol.rs, src/arkiv/schema.rs).
+
+/** The largest calldata, and the largest serialized transaction, the node accepts (its `TX_CAP`). */
+export const MAX_INPUT_BYTES = 384 * 1024
+/** The most operations one execute() call may carry. */
+export const MAX_OPERATIONS = 128
+/** The most attribute triples one create or patch may carry. */
+export const MAX_ATTRIBUTES = 32
 /** The longest `str` value, in UTF-8 bytes. */
 export const MAX_STR_BYTES = 128
-
 /** The longest single `bytes` value. */
 export const MAX_BYTES_LENGTH = 128 * 1024
 
@@ -100,7 +109,8 @@ const ATTRIBUTE_TYPES: Record<number, AttributeType> = {
 /** Decimal places a `dec` value is scaled by, fixed by the protocol. */
 const DECIMAL_SCALE = 18
 
-// The `operationData` struct each tag selects, spelled as the SDK spells it.
+// The `operationData` struct each tag selects, spelled as the SDK spells it. Used to re-encode
+// what was decoded, so only the canonical encoding is accepted.
 const ATTRIBUTE_TUPLE = "(bytes32 name, uint8 typeId, bytes value)[]"
 
 const CREATE_PARAMS = parseAbiParameters(
@@ -111,13 +121,17 @@ const EXTEND_PARAMS = parseAbiParameters("(bytes32 entityKey, uint64 expiresAt, 
 const TRANSFER_PARAMS = parseAbiParameters("(bytes32 entityKey, address newOwner)")
 const DELETE_PARAMS = parseAbiParameters("(bytes32 entityKey)")
 
+/**
+ * The input is not an Arkiv execute() call the node would accept. Its message is fixed text: it
+ * never quotes the input or a library's own error.
+ */
 export class DecodeError extends Error {}
 
 /**
  * An attribute value in the encoding the node's `arkiv_query` returns for it, so the two compare
  * with plain equality: `bool` a JSON boolean, `i32` a JSON number, `u64`/`u256` a `0x` quantity,
  * `dec` its trimmed decimal literal, `str` its text, and `bytes32`/`key`/`addr` lowercase `0x`
- * hex. `null` for `bytes` (never returned), a tombstone and a triple that does not decode.
+ * hex. `null` for `bytes` (never returned), a tombstone, and a value that does not decode.
  */
 export type AttributeValue = string | number | boolean | null
 
@@ -125,7 +139,7 @@ export type DecodedAttribute = {
   name: string
   /** the raw `typeId` byte, indexed flag included */
   typeId: number
-  /** the type in the low seven bits; "tombstone" for typeId 0; "invalid(0x..)" for an id no build accepts */
+  /** the type in the low seven bits; "tombstone" for typeId 0; "invalid(0x..)" for a typeId the node refuses */
   type: AttributeType | "tombstone" | `invalid(0x${string})`
   /** bit 7 of typeId */
   indexed: boolean
@@ -134,11 +148,11 @@ export type DecodedAttribute = {
   size: number
   /** `bytes` only: keccak256 of the content, which is never returned */
   keccak256?: Hex
-  /** present only when the triple is malformed: what is wrong with it */
+  /** present only when the node would refuse this triple: why */
   error?: string
 }
 
-export type OperationName = "create" | "patch" | "extend" | "transfer" | "delete" | `unknown(${number})`
+export type OperationName = "create" | "patch" | "extend" | "transfer" | "delete"
 
 /**
  * One operation. Every operation carries every field, `null` where its tag has no such field, so a
@@ -157,7 +171,11 @@ export type DecodedOperation = {
   expiresAt: string | null
   /** create, extend: the lifetime floor in blocks from the landing block, as a decimal string; "0" when unset */
   minLifetime: string | null
-  /** create, extend: whether expiresAt is the permanent 2**64-1 */
+  /**
+   * create, extend: true when expiresAt asks for permanence (2**64-1). Only true is definitive: a
+   * minLifetime that reaches 2**64-1 from the landing block is permanent too, which takes the block
+   * to know.
+   */
   permanent: boolean | null
   /** transfer: the new owner, lowercase */
   newOwner: Address | null
@@ -178,16 +196,123 @@ export type DecodedTransaction = {
   operations: DecodedOperation[]
 }
 
+// --- strict, canonical ABI reading ------------------------------------------------------------
+//
+// The node accepts an execute() call only in its canonical encoding: it decodes, re-encodes and
+// requires the bytes to match, for the call and for every operation's struct. This reader walks
+// exactly the layout that encoding fixes — each offset where the canonical encoding puts it, each
+// uint as wide as its type, each bytes value zero-padded, nothing after the end — so aliased
+// offsets, dirty words and trailing data are refused before anything is copied. A small input
+// therefore cannot expand into a large decode.
+
+function refuse(reason: string): never {
+  throw new DecodeError(`Data is not an Arkiv execute() call the node accepts: ${reason}`)
+}
+
+function word(data: Uint8Array, at: number): Uint8Array {
+  if (at + 32 > data.length) refuse("it ends inside a word")
+  return data.subarray(at, at + 32)
+}
+
+/** A uint word of `bits` bits: the bytes above them must be zero. */
+function uint(data: Uint8Array, at: number, bits: number): bigint {
+  const w = word(data, at)
+  for (let i = 0; i < 32 - bits / 8; i++) {
+    if (w[i] !== 0) refuse(`a uint${bits} word has bits set above its width`)
+  }
+  return bytesToBigInt(w)
+}
+
+/** An offset or length word that must hold exactly `expected`. */
+function expectWord(data: Uint8Array, at: number, expected: number) {
+  if (uint(data, at, 256) !== BigInt(expected)) refuse("an offset is not where the canonical encoding puts it")
+}
+
+/** A dynamic `bytes` at `at`: its length word, then the content, zero-padded to a whole word. */
+function dynamicBytes(data: Uint8Array, at: number): { content: Uint8Array; next: number } {
+  const length = uint(data, at, 256)
+  const start = at + 32
+  if (length > BigInt(Math.max(0, data.length - start))) refuse("a bytes value runs past the end")
+  const n = Number(length)
+  const next = start + Math.ceil(n / 32) * 32
+  if (next > data.length) refuse("a bytes value runs past the end")
+  for (let i = start + n; i < next; i++) {
+    if (data[i] !== 0) refuse("a bytes value is not zero-padded")
+  }
+  return { content: data.subarray(start, start + n), next }
+}
+
+function expectEnd(data: Uint8Array, end: number) {
+  if (end !== data.length) refuse("data follows the end of the encoding")
+}
+
+type RawOperation = { tag: number; data: Uint8Array }
+
+/** The `(uint8 operation, bytes operationData)[]` argument of execute(), after the selector. */
+function readOperations(args: Uint8Array): RawOperation[] {
+  expectWord(args, 0, 0x20)
+  const count = uint(args, 0x20, 256)
+  if (count === 0n) refuse("it carries no operations")
+  if (count > BigInt(MAX_OPERATIONS)) refuse(`it carries more than ${MAX_OPERATIONS} operations`)
+  const n = Number(count)
+  // Element offsets count from the end of the length word.
+  const area = 0x40
+  let offset = 32 * n
+  const operations: RawOperation[] = []
+  for (let i = 0; i < n; i++) {
+    expectWord(args, area + 32 * i, offset)
+    const at = area + offset
+    const tag = Number(uint(args, at, 8))
+    expectWord(args, at + 32, 0x40)
+    const { content, next } = dynamicBytes(args, at + 64)
+    operations.push({ tag, data: content })
+    offset = next - area
+  }
+  expectEnd(args, area + offset)
+  return operations
+}
+
+type RawAttribute = { name: Uint8Array; typeId: number; value: Uint8Array }
+
+/** A `(bytes32 name, uint8 typeId, bytes value)[]` at `at`, with where it ends. */
+function readAttributes(data: Uint8Array, at: number): { cells: RawAttribute[]; end: number } {
+  const count = uint(data, at, 256)
+  if (count > BigInt(MAX_ATTRIBUTES)) refuse(`an operation carries more than ${MAX_ATTRIBUTES} attributes`)
+  const n = Number(count)
+  const area = at + 32
+  let offset = 32 * n
+  const cells: RawAttribute[] = []
+  for (let i = 0; i < n; i++) {
+    expectWord(data, area + 32 * i, offset)
+    const p = area + offset
+    const name = word(data, p)
+    const typeId = Number(uint(data, p + 32, 8))
+    expectWord(data, p + 64, 0x60)
+    const { content, next } = dynamicBytes(data, p + 96)
+    cells.push({ name, typeId, value: content })
+    offset = next - area
+  }
+  return { cells, end: area + offset }
+}
+
+/** Re-encodes what was read and requires the very bytes it came from, as the node does. */
+function expectCanonical(original: Uint8Array, reencoded: Hex) {
+  if (reencoded !== toHex(original)) refuse("it is not canonically encoded")
+}
+
+function abiCells(cells: RawAttribute[]) {
+  return cells.map((c) => ({ name: toHex(c.name), typeId: c.typeId, value: toHex(c.value) }))
+}
+
+// --- attribute values ----------------------------------------------------------------------------
+
 function decodeUtf8(bytes: Uint8Array): string | undefined {
   try {
+    // ignoreBOM keeps a leading byte order mark as text, as the node does.
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)
   } catch {
     return undefined
   }
-}
-
-function byteLength(value: Hex): number {
-  return (value.length - 2) / 2
 }
 
 function hexByte(n: number): `0x${string}` {
@@ -195,14 +320,11 @@ function hexByte(n: number): `0x${string}` {
 }
 
 /** An Ident32 name: left-aligned, NUL-padded UTF-8. */
-function decodeName(name: Hex): { name: string; error?: string } {
-  const bytes = hexToBytes(name)
-  let end = bytes.indexOf(0)
-  if (end === -1) end = bytes.length
-  const text = bytes.subarray(end).every((b) => b === 0) ? decodeUtf8(bytes.subarray(0, end)) : undefined
-  if (text === undefined) {
-    return { name: name.toLowerCase(), error: "the name is not NUL-padded UTF-8" }
-  }
+function decodeName(name: Uint8Array): { name: string; error?: string } {
+  let end = name.indexOf(0)
+  if (end === -1) end = name.length
+  const text = name.subarray(end).every((b) => b === 0) ? decodeUtf8(name.subarray(0, end)) : undefined
+  if (text === undefined) return { name: toHex(name), error: "the name is not NUL-padded UTF-8" }
   return { name: text }
 }
 
@@ -227,37 +349,36 @@ function invalid(error: string): ValueResult {
  * Decodes the value bytes of a word or `str` type with the strictness of the node's
  * `decode_abi_value`: what the node would refuse is reported as an error, never reinterpreted.
  */
-function decodeValue(type: Exclude<AttributeType, "bytes">, value: Hex): ValueResult {
-  const width = byteLength(value)
+function decodeValue(type: Exclude<AttributeType, "bytes">, value: Uint8Array): ValueResult {
   if (type === "str") {
-    if (width > MAX_STR_BYTES) return invalid(`a str value is at most ${MAX_STR_BYTES} bytes, got ${width}`)
-    const text = decodeUtf8(hexToBytes(value))
+    if (value.length > MAX_STR_BYTES) return invalid(`a str value is longer than ${MAX_STR_BYTES} bytes`)
+    const text = decodeUtf8(value)
     if (text === undefined) return invalid("a str value must be valid UTF-8")
     if (CONTROL_CHARACTER.test(text)) return invalid("a str value must not contain control characters")
     return { value: text }
   }
 
-  if (width !== 32) return invalid(`a ${type} value must be 32 bytes, got ${width}`)
-  const hex = value.toLowerCase() as Hex
-  const word = BigInt(hex)
+  if (value.length !== 32) return invalid(`a ${type} value must be 32 bytes`)
+  const hex = toHex(value)
+  const w = bytesToBigInt(value)
   switch (type) {
     case "bool":
-      if (word > 1n) return invalid("a bool word must hold exactly 0 or 1")
-      return { value: word === 1n }
+      if (w > 1n) return invalid("a bool word must hold exactly 0 or 1")
+      return { value: w === 1n }
     case "i32": {
-      const narrowed = BigInt.asIntN(32, word)
-      if (BigInt.asUintN(256, narrowed) !== word) return invalid("an i32 word must be sign-extended")
+      const narrowed = BigInt.asIntN(32, w)
+      if (BigInt.asUintN(256, narrowed) !== w) return invalid("an i32 word must be sign-extended")
       return { value: Number(narrowed) }
     }
     case "u64":
-      if (word >> 64n !== 0n) return invalid("a u64 word must be zero-padded to 8 bytes")
-      return { value: `0x${word.toString(16)}` }
+      if (w >> 64n !== 0n) return invalid("a u64 word must be zero-padded to 8 bytes")
+      return { value: `0x${w.toString(16)}` }
     case "u256":
-      return { value: `0x${word.toString(16)}` }
+      return { value: `0x${w.toString(16)}` }
     case "dec":
-      return { value: formatDecimal(BigInt.asIntN(256, word)) }
+      return { value: formatDecimal(BigInt.asIntN(256, w)) }
     case "addr":
-      if (word >> 160n !== 0n) return invalid("an addr word must be zero-padded to 20 bytes")
+      if (w >> 160n !== 0n) return invalid("an addr word must be zero-padded to 20 bytes")
       return { value: `0x${hex.slice(-40)}` }
     case "bytes32":
     case "key":
@@ -265,68 +386,45 @@ function decodeValue(type: Exclude<AttributeType, "bytes">, value: Hex): ValueRe
   }
 }
 
-type AbiAttribute = { name: Hex; typeId: number; value: Hex }
-
 /**
  * Decodes one attribute triple. Never throws: a triple the node would refuse comes back with an
- * `error`, so the rest of the transaction still reads. A `bytes` value is reduced to its size and
- * keccak256 here, and its content goes no further.
+ * `error`, so the rest of the transaction still reads. A `bytes` value is reduced to its size and keccak256 here, and its content goes no further.
  */
-function decodeAttribute(cell: AbiAttribute, inPatch: boolean): DecodedAttribute {
+function decodeAttribute(cell: RawAttribute, inPatch: boolean): DecodedAttribute {
   const { name, error: nameError } = decodeName(cell.name)
   const typeId = cell.typeId
   const indexed = (typeId & INDEXED_FLAG) !== 0
-  const size = byteLength(cell.value)
+  const size = cell.value.length
   const base = typeId & ~INDEXED_FLAG
   const type = ATTRIBUTE_TYPES[base]
 
   let attribute: DecodedAttribute
+  let valueError: string | undefined
   if (typeId === AttributeTypeId.Tombstone) {
     attribute = { name, typeId, type: "tombstone", indexed, value: null, size }
-    if (!inPatch) attribute.error = "a tombstone (typeId 0) is legal only in a patch"
-    else if (size !== 0) attribute.error = `a tombstone carries no value, got ${size} bytes`
-  } else if (type === undefined) {
-    attribute = {
-      name,
-      typeId,
-      type: `invalid(${hexByte(typeId)})`,
-      indexed,
-      value: null,
-      size,
-      error:
-        base === AttributeTypeId.Tombstone
-          ? "a tombstone never carries the indexed flag"
-          : `unknown attribute type ${hexByte(base)}`,
-    }
+    if (!inPatch) valueError = "a tombstone (typeId 0) is legal only in a patch"
+    else if (size !== 0) valueError = "a tombstone carries no value"
+  } else if (type === undefined || (type === "bytes" && indexed)) {
+    attribute = { name, typeId, type: `invalid(${hexByte(typeId)})`, indexed, value: null, size }
+    if (type === "bytes") valueError = "bytes are stored, never indexed: the indexed flag is not allowed on bytes"
+    else if (base === AttributeTypeId.Tombstone) valueError = "a tombstone never carries the indexed flag"
+    else valueError = "the typeId names no attribute type"
   } else if (type === "bytes") {
-    if (indexed) {
-      attribute = {
-        name,
-        typeId,
-        type: `invalid(${hexByte(typeId)})`,
-        indexed,
-        value: null,
-        size,
-        error: "bytes are stored, never indexed: the indexed flag is not allowed on bytes",
-      }
-    } else {
-      attribute = { name, typeId, type, indexed, value: null, size, keccak256: keccak256(cell.value) }
-      if (size > MAX_BYTES_LENGTH) {
-        attribute.error = `a bytes value is at most ${MAX_BYTES_LENGTH} bytes, got ${size}`
-      }
-    }
+    attribute = { name, typeId, type, indexed, value: null, size, keccak256: keccak256(cell.value) }
+    if (size > MAX_BYTES_LENGTH) valueError = `a bytes value is longer than ${MAX_BYTES_LENGTH} bytes`
   } else {
     const decoded = decodeValue(type, cell.value)
     attribute = { name, typeId, type, indexed, value: decoded.value, size }
-    if (decoded.error !== undefined) attribute.error = decoded.error
+    valueError = decoded.error
   }
 
   // A malformed name outranks whatever else is wrong: the cell cannot even be named.
-  if (nameError !== undefined) attribute.error = nameError
+  const error = nameError ?? valueError
+  if (error !== undefined) attribute.error = error
   return attribute
 }
 
-function decodeAttributes(cells: readonly AbiAttribute[], inPatch: boolean) {
+function decodeAttributes(cells: RawAttribute[], inPatch: boolean) {
   const attributes = cells.map((cell) => decodeAttribute(cell, inPatch))
   const bytesSize = attributes.reduce((total, a) => (a.type === "bytes" ? total + a.size : total), 0)
   return { attributes, bytesSize }
@@ -340,12 +438,14 @@ function expiryFields(expiresAt: bigint, minLifetime: bigint) {
   }
 }
 
+// --- operations ----------------------------------------------------------------------------------
+
 /** Decode one entry of the tagged union: the tag says which struct `operationData` holds. */
-function decodeOperation(op: { operation: number; operationData: Hex }): DecodedOperation {
-  const operationType = op.operation
-  const operation = OPERATION_NAMES[operationType] ?? `unknown(${operationType})`
+function decodeOperation({ tag, data }: RawOperation): DecodedOperation {
+  const operation = OPERATION_NAMES[tag]
+  if (operation === undefined) refuse("an operation tag is not one of 1 to 5")
   const base: DecodedOperation = {
-    operationType,
+    operationType: tag,
     operation,
     entityKey: null,
     salt: null,
@@ -358,86 +458,102 @@ function decodeOperation(op: { operation: number; operationData: Hex }): Decoded
     attributes: [],
   }
 
-  try {
-    switch (operationType) {
-      case OperationType.Create: {
-        const [create] = decodeAbiParameters(CREATE_PARAMS, op.operationData)
-        return {
-          ...base,
-          salt: create.salt.toString(),
-          creationFlags: create.creationFlags,
-          ...expiryFields(create.expiresAt, create.minLifetime),
-          ...decodeAttributes(create.attributes, false),
-        }
+  let decoded: DecodedOperation
+  switch (tag) {
+    case OperationType.Create: {
+      // abi.encode of a dynamic struct: an offset to it, then its head and tail.
+      expectWord(data, 0, 0x20)
+      const salt = uint(data, 0x20, 128)
+      const expiresAt = uint(data, 0x40, 64)
+      const minLifetime = uint(data, 0x60, 64)
+      const creationFlags = Number(uint(data, 0x80, 8))
+      expectWord(data, 0xa0, 0xa0)
+      const { cells, end } = readAttributes(data, 0xc0)
+      expectEnd(data, end)
+      expectCanonical(
+        data,
+        encodeAbiParameters(CREATE_PARAMS, [{ salt, expiresAt, minLifetime, creationFlags, attributes: abiCells(cells) }]),
+      )
+      decoded = {
+        ...base,
+        salt: salt.toString(),
+        creationFlags,
+        ...expiryFields(expiresAt, minLifetime),
+        ...decodeAttributes(cells, false),
       }
-      case OperationType.Patch: {
-        const [patch] = decodeAbiParameters(PATCH_PARAMS, op.operationData)
-        return {
-          ...base,
-          entityKey: patch.entityKey.toLowerCase() as Hex,
-          ...decodeAttributes(patch.mutations, true),
-        }
-      }
-      case OperationType.Extend: {
-        const [extend] = decodeAbiParameters(EXTEND_PARAMS, op.operationData)
-        return {
-          ...base,
-          entityKey: extend.entityKey.toLowerCase() as Hex,
-          ...expiryFields(extend.expiresAt, extend.minLifetime),
-        }
-      }
-      case OperationType.Transfer: {
-        const [transfer] = decodeAbiParameters(TRANSFER_PARAMS, op.operationData)
-        return {
-          ...base,
-          entityKey: transfer.entityKey.toLowerCase() as Hex,
-          newOwner: transfer.newOwner.toLowerCase() as Address,
-        }
-      }
-      case OperationType.Delete: {
-        const [remove] = decodeAbiParameters(DELETE_PARAMS, op.operationData)
-        return { ...base, entityKey: remove.entityKey.toLowerCase() as Hex }
-      }
-      default:
-        // A tag this build does not know. Report it as such rather than rejecting the batch, so
-        // the operations around it are still decoded.
-        return base
+      break
     }
-  } catch (e) {
-    throw new DecodeError(
-      `Operation data of a ${operation} operation does not decode: ${e instanceof Error ? e.message : String(e)}`,
-    )
+    case OperationType.Patch: {
+      expectWord(data, 0, 0x20)
+      const entityKey = toHex(word(data, 0x20))
+      expectWord(data, 0x40, 0x40)
+      const { cells, end } = readAttributes(data, 0x60)
+      expectEnd(data, end)
+      expectCanonical(data, encodeAbiParameters(PATCH_PARAMS, [{ entityKey, mutations: abiCells(cells) }]))
+      decoded = { ...base, entityKey, ...decodeAttributes(cells, true) }
+      break
+    }
+    case OperationType.Extend: {
+      // Static structs are encoded in place.
+      const entityKey = toHex(word(data, 0))
+      const expiresAt = uint(data, 0x20, 64)
+      const minLifetime = uint(data, 0x40, 64)
+      expectEnd(data, 0x60)
+      expectCanonical(data, encodeAbiParameters(EXTEND_PARAMS, [{ entityKey, expiresAt, minLifetime }]))
+      decoded = { ...base, entityKey, ...expiryFields(expiresAt, minLifetime) }
+      break
+    }
+    case OperationType.Transfer: {
+      const entityKey = toHex(word(data, 0))
+      uint(data, 0x20, 160)
+      const newOwner = `0x${toHex(word(data, 0x20)).slice(-40)}` as Address
+      expectEnd(data, 0x40)
+      expectCanonical(data, encodeAbiParameters(TRANSFER_PARAMS, [{ entityKey, newOwner }]))
+      decoded = { ...base, entityKey, newOwner }
+      break
+    }
+    default: {
+      const entityKey = toHex(word(data, 0))
+      expectEnd(data, 0x20)
+      expectCanonical(data, encodeAbiParameters(DELETE_PARAMS, [{ entityKey }]))
+      decoded = { ...base, entityKey }
+    }
   }
+
+  return decoded
 }
 
-function selectorOf(data: Hex): string {
+function selectorOf(data: string): string {
   return data.slice(0, 10).toLowerCase()
 }
 
-/** Decode `execute(...)` calldata. */
-export function decodeCalldata(data: Hex): DecodedTransaction {
-  const selector = selectorOf(data)
-  if (selector !== EXECUTE_SELECTOR) {
-    throw new DecodeError(`Data is not an Arkiv execute() call: selector ${selector} is not ${EXECUTE_SELECTOR}`)
+/** Bounded first, then shaped: the node takes nothing larger than its cap. */
+function checkHex(input: string): Hex {
+  if (input.length > 2 + 2 * MAX_INPUT_BYTES) {
+    throw new DecodeError(`Input is longer than the node's ${MAX_INPUT_BYTES}-byte transaction cap`)
   }
-  let args
-  try {
-    ;({ args } = decodeFunctionData({ abi: EXECUTE_ABI, data }))
-  } catch (e) {
-    throw new DecodeError(
-      `Data is not a valid Arkiv execute() call: ${e instanceof Error ? e.message : String(e)}`,
-    )
-  }
-
-  return {
-    functionName: "execute",
-    format: "udc",
-    operations: args[0].map(decodeOperation),
-  }
+  if (!/^0x[0-9a-fA-F]*$/.test(input)) throw new DecodeError("Input must be a 0x-prefixed hex string")
+  if (input.length % 2 !== 0) throw new DecodeError("Input must be a whole number of bytes: an even count of hex digits")
+  return input as Hex
 }
 
-function isHexString(input: string): input is Hex {
-  return /^0x[0-9a-fA-F]*$/.test(input)
+/** Decode `execute(...)` calldata. */
+export function decodeCalldata(input: Hex): DecodedTransaction {
+  const data = checkHex(input)
+  if (selectorOf(data) !== EXECUTE_SELECTOR) {
+    throw new DecodeError(`Data is not an Arkiv execute() call: its selector is not ${EXECUTE_SELECTOR}`)
+  }
+  const calldata = hexToBytes(data)
+  const raw = readOperations(calldata.subarray(4))
+  expectCanonical(
+    calldata,
+    encodeFunctionData({
+      abi: EXECUTE_ABI,
+      functionName: "execute",
+      args: [raw.map((op) => ({ operation: op.tag, operationData: toHex(op.data) }))],
+    }),
+  )
+  return { functionName: "execute", format: "udc", operations: raw.map(decodeOperation) }
 }
 
 /**
@@ -445,23 +561,18 @@ function isHexString(input: string): input is Hex {
  * (signed or unsigned) whose data is an Arkiv execute() call.
  */
 export function decodeArkivTransaction(input: string): DecodedTransaction {
-  const trimmed = input.trim()
-  if (!isHexString(trimmed)) {
-    throw new DecodeError("Input must be a 0x-prefixed hex string")
-  }
+  const hex = checkHex(input.trim())
 
-  if (selectorOf(trimmed) === EXECUTE_SELECTOR) {
-    return decodeCalldata(trimmed)
-  }
+  if (selectorOf(hex) === EXECUTE_SELECTOR) return decodeCalldata(hex)
 
-  // Not raw calldata — try interpreting it as a serialized transaction.
+  // Not raw calldata: try interpreting it as a serialized transaction. Whatever the parser
+  // objects to is a fault of the input, and its own message is not passed on.
   let tx
   try {
-    tx = parseTransaction(trimmed)
+    tx = parseTransaction(hex)
   } catch {
     throw new DecodeError(
-      `Data is neither Arkiv execute() calldata (selector ${EXECUTE_SELECTOR}, got ${selectorOf(trimmed)}) ` +
-        "nor a parseable serialized transaction",
+      `Data is neither Arkiv execute() calldata (selector ${EXECUTE_SELECTOR}) nor a parseable serialized transaction`,
     )
   }
 

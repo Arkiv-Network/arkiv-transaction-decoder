@@ -101,7 +101,9 @@ describe("server", () => {
       body: JSON.stringify({ data: `0xba8ccf92${"00".repeat(64)}` }),
     })
     expect(status).toBe(400)
-    expect(body.error).toContain("0xba8ccf92")
+    expect(body.error).toBeString()
+    // Generic: the refusal quotes nothing of the input.
+    expect(body.error).not.toContain("ba8ccf92")
   })
 
   test("POST /api/decode accepts raw hex as text body", async () => {

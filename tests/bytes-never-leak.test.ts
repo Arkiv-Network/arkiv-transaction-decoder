@@ -95,6 +95,8 @@ const NAMES = ["body", "cover", "thumb", "blob", "Data", "x.y", "z-1", "q_2"]
 function randomBatch(random: ReturnType<typeof generator>) {
   const contents: Uint8Array[] = []
   const markers: string[] = []
+  // Keeps the batch under the node's input cap, past which the decoder refuses it unread.
+  let budget = 300 * 1024
   const randomCells = (allowTombstones: boolean): AbiAttribute[] => {
     const cells: AbiAttribute[] = []
     const count = 1 + random.int(6)
@@ -102,7 +104,8 @@ function randomBatch(random: ReturnType<typeof generator>) {
       const name = `${NAMES[random.int(NAMES.length)]}${i}`
       const pick = random.next()
       if (pick < 0.5) {
-        const length = random.next() < 0.1 ? 8 * 1024 + random.int(32 * 1024) : random.int(512)
+        const length = Math.min(budget, random.next() < 0.1 ? 8 * 1024 + random.int(32 * 1024) : random.int(512))
+        budget -= length
         let content: Uint8Array
         if (random.next() < 0.3) {
           const text = textContent(random, length)

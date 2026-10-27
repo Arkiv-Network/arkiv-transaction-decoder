@@ -20,6 +20,7 @@ import {
   encodeExecute,
   extendOp,
   patchOp,
+  sorted,
   strCell,
   tombstoneCell,
   transferOp,
@@ -171,7 +172,7 @@ describe("attribute values", () => {
   test("use the encoding arkiv_query returns, whatever the magnitude", () => {
     const attributes = attributesOf(
       createOp({
-        attributes: [
+        attributes: sorted([
           wordCell("f", AttributeTypeId.Bool, 0n),
           wordCell("t", AttributeTypeId.Bool, 1n),
           wordCell("i32min", AttributeTypeId.I32, -(2n ** 31n)),
@@ -179,7 +180,7 @@ describe("attribute values", () => {
           wordCell("u64zero", AttributeTypeId.U64, 0n),
           wordCell("u64max", AttributeTypeId.U64, 2n ** 64n - 1n),
           wordCell("u256max", AttributeTypeId.U256, 2n ** 256n - 1n),
-          wordCell("dec", AttributeTypeId.Dec, 3_500_000_000_000_000_000n),
+          wordCell("decimal", AttributeTypeId.Dec, 3_500_000_000_000_000_000n),
           wordCell("decneg", AttributeTypeId.Dec, -250_000_000_000_000_000n),
           wordCell("dectiny", AttributeTypeId.Dec, 1n),
           wordCell("deczero", AttributeTypeId.Dec, 0n),
@@ -189,9 +190,10 @@ describe("attribute values", () => {
           wordCell("parent", AttributeTypeId.Key, BigInt(ENTITY_KEY)),
           strCell("name", "Zażółć gęślą jaźń 🙂"),
           strCell("empty", ""),
-        ],
+        ]),
       }),
     )
+    expect(attributes.filter((a) => a.error !== undefined)).toEqual([])
     expect(Object.fromEntries(attributes.map((a) => [a.name, a.value]))).toEqual({
       f: false,
       t: true,
@@ -200,7 +202,7 @@ describe("attribute values", () => {
       u64zero: "0x0",
       u64max: "0xffffffffffffffff",
       u256max: `0x${"f".repeat(64)}`,
-      dec: "3.5",
+      decimal: "3.5",
       decneg: "-0.25",
       dectiny: "0.000000000000000001",
       deczero: "0",
@@ -253,20 +255,27 @@ describe("malformed triples", () => {
     const op = decodeOne(
       createOp({
         attributes: [
-          cell("indexedbytes", AttributeTypeId.Bytes | INDEXED_FLAG, toHex(toBytes("secret content"))),
-          cell("flaggedtombstone", INDEXED_FLAG, "0x"),
-          cell("unknown", 0x0b, toHex(1n, { size: 32 })),
-          cell("unknownindexed", 0xff, toHex(1n, { size: 32 })),
-          strCell("fine", "still decoded"),
+          cell("a1indexedbytes", AttributeTypeId.Bytes | INDEXED_FLAG, toHex(toBytes("secret content"))),
+          cell("a2flaggedtombstone", INDEXED_FLAG, "0x"),
+          cell("a3unknown", 0x0b, toHex(1n, { size: 32 })),
+          cell("a4unknownindexed", 0xff, toHex(1n, { size: 32 })),
+          strCell("a5fine", "still decoded"),
         ],
       }),
     )
     expect(op.attributes.map((a) => [a.name, a.type, a.indexed, a.value])).toEqual([
-      ["indexedbytes", "invalid(0x87)", true, null],
-      ["flaggedtombstone", "invalid(0x80)", true, null],
-      ["unknown", "invalid(0x0b)", false, null],
-      ["unknownindexed", "invalid(0xff)", true, null],
-      ["fine", "str", true, "still decoded"],
+      ["a1indexedbytes", "invalid(0x87)", true, null],
+      ["a2flaggedtombstone", "invalid(0x80)", true, null],
+      ["a3unknown", "invalid(0x0b)", false, null],
+      ["a4unknownindexed", "invalid(0xff)", true, null],
+      ["a5fine", "str", true, "still decoded"],
+    ])
+    expect(op.attributes.map((a) => a.error)).toEqual([
+      "bytes are stored, never indexed: the indexed flag is not allowed on bytes",
+      "a tombstone never carries the indexed flag",
+      "the typeId names no attribute type",
+      "the typeId names no attribute type",
+      undefined,
     ])
     for (const attribute of op.attributes.slice(0, 4)) {
       expect(attribute.error).toBeString()
@@ -284,33 +293,33 @@ describe("malformed triples", () => {
     const attributes = attributesOf(
       createOp({
         attributes: [
-          cell("bool2", AttributeTypeId.Bool, word(2n)),
-          cell("i32wide", AttributeTypeId.I32, word(2n ** 31n)),
-          cell("u64wide", AttributeTypeId.U64, word(2n ** 64n)),
-          cell("addrwide", AttributeTypeId.Addr, word(2n ** 160n)),
-          cell("short", AttributeTypeId.U256, toHex(1n, { size: 31 })),
-          cell("long", AttributeTypeId.Key, toHex(1n, { size: 33 })),
-          cell("utf8", AttributeTypeId.Str, "0xff00"),
-          cell("toolong", AttributeTypeId.Str, toHex(toBytes("x".repeat(129)))),
-          cell("control", AttributeTypeId.Str, toHex(toBytes("tab\there"))),
-          cell("del", AttributeTypeId.Str, toHex(toBytes("del\u007f"))),
-          tombstoneCell("tombstone"),
+          cell("a00bool2", AttributeTypeId.Bool, word(2n)),
+          cell("a01i32wide", AttributeTypeId.I32, word(2n ** 31n)),
+          cell("a02u64wide", AttributeTypeId.U64, word(2n ** 64n)),
+          cell("a03addrwide", AttributeTypeId.Addr, word(2n ** 160n)),
+          cell("a04short", AttributeTypeId.U256, toHex(1n, { size: 31 })),
+          cell("a05long", AttributeTypeId.Key, toHex(1n, { size: 33 })),
+          cell("a06utf8", AttributeTypeId.Str, "0xff00"),
+          cell("a07toolong", AttributeTypeId.Str, toHex(toBytes("x".repeat(129)))),
+          cell("a08control", AttributeTypeId.Str, toHex(toBytes("tab\there"))),
+          cell("a09del", AttributeTypeId.Str, toHex(toBytes("del\u007f"))),
+          tombstoneCell("a10tombstone"),
         ],
       }),
     )
-    expect(attributes.map((a) => [a.name, a.value, typeof a.error])).toEqual([
-      ["bool2", null, "string"],
-      ["i32wide", null, "string"],
-      ["u64wide", null, "string"],
-      ["addrwide", null, "string"],
-      ["short", null, "string"],
-      ["long", null, "string"],
-      ["utf8", null, "string"],
-      ["toolong", null, "string"],
-      ["control", null, "string"],
-      ["del", null, "string"],
+    expect(attributes.map((a) => [a.value, a.error])).toEqual([
+      [null, "a bool word must hold exactly 0 or 1"],
+      [null, "an i32 word must be sign-extended"],
+      [null, "a u64 word must be zero-padded to 8 bytes"],
+      [null, "an addr word must be zero-padded to 20 bytes"],
+      [null, "a u256 value must be 32 bytes"],
+      [null, "a key value must be 32 bytes"],
+      [null, "a str value must be valid UTF-8"],
+      [null, "a str value is longer than 128 bytes"],
+      [null, "a str value must not contain control characters"],
+      [null, "a str value must not contain control characters"],
       // A tombstone in a create is no mutation at all.
-      ["tombstone", null, "string"],
+      [null, "a tombstone (typeId 0) is legal only in a patch"],
     ])
     expect(attributes.map((a) => a.type)).toEqual([
       "bool",
@@ -341,19 +350,20 @@ describe("malformed triples", () => {
   })
 
   test("a name that is not NUL-padded UTF-8 is reported as its hex", () => {
-    const notUtf8 = `0xff${"00".repeat(31)}` as Hex
     const notPadded = `0x61006200${"00".repeat(28)}` as Hex
+    const notUtf8 = `0xff${"00".repeat(31)}` as Hex
     const op = decodeOne(
       createOp({
         attributes: [
-          { name: notUtf8, typeId: AttributeTypeId.Str | INDEXED_FLAG, value: toHex(toBytes("v")) },
           { name: notPadded, typeId: AttributeTypeId.Str | INDEXED_FLAG, value: toHex(toBytes("v")) },
+          { name: notUtf8, typeId: AttributeTypeId.Str | INDEXED_FLAG, value: toHex(toBytes("v")) },
         ],
       }),
     )
-    expect(op.attributes.map((a) => [a.name, a.value, typeof a.error])).toEqual([
-      [notUtf8, "v", "string"],
-      [notPadded, "v", "string"],
+    // The value still decodes: what is wrong is the name, and the error says so.
+    expect(op.attributes.map((a) => [a.name, a.value, a.error])).toEqual([
+      [notPadded, "v", "the name is not NUL-padded UTF-8"],
+      [notUtf8, "v", "the name is not NUL-padded UTF-8"],
     ])
   })
 })
@@ -466,23 +476,10 @@ describe("extend, transfer and delete", () => {
 })
 
 describe("decodeCalldata", () => {
-  test("labels unknown operation tags instead of misreporting them", () => {
-    const { operations } = decodeCalldata(encodeExecute([unknownOp(99), deleteOp(ENTITY_KEY)]))
-    expect(operations[0]).toEqual({
-      operationType: 99,
-      operation: "unknown(99)",
-      entityKey: null,
-      salt: null,
-      creationFlags: null,
-      expiresAt: null,
-      minLifetime: null,
-      permanent: null,
-      newOwner: null,
-      bytesSize: 0,
-      attributes: [],
-    })
-    // The rest of the batch still decodes around it.
-    expect(operations[1]!.operation).toBe("delete")
+  test("refuses an operation tag the node does not accept", () => {
+    // The node answers UnsupportedArkivOperation for the whole transaction, so it never mines one.
+    expect(() => decodeCalldata(encodeExecute([unknownOp(99), deleteOp(ENTITY_KEY)]))).toThrow(DecodeError)
+    expect(() => decodeCalldata(encodeExecute([unknownOp(0)]))).toThrow(DecodeError)
   })
 
   test("rejects operation data that does not match its tag", () => {
