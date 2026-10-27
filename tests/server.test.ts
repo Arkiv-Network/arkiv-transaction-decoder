@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test"
-import { handleRequest } from "../src/server"
+import { describe, expect, spyOn, test } from "bun:test"
+import * as decoder from "../src/decoder"
+import { MAX_BODY_BYTES, handleRequest } from "../src/server"
 import { SERVICE_NAME, SERVICE_VERSION } from "../src/version"
 import { bytesCell, createOp, deleteOp, encodeExecute, strCell } from "./encode"
 
@@ -147,6 +148,78 @@ describe("server", () => {
     const { status, body } = await call("/api/decode", { method: "POST" })
     expect(status).toBe(400)
     expect(body.error).toContain("Missing transaction data")
+  })
+
+  test("POST /api/decode with odd-length hex returns 400", async () => {
+    const { status, body } = await call("/api/decode", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: `${encodeExecute([deleteOp(ENTITY_KEY)])}0`,
+    })
+    expect(status).toBe(400)
+    expect(body.error).toContain("even")
+  })
+
+  test("a body declared larger than the limit is refused unread with 413", async () => {
+    const { status, body } = await call("/api/decode", {
+      method: "POST",
+      headers: { "content-type": "text/plain", "content-length": String(MAX_BODY_BYTES + 1) },
+      body: "0x",
+    })
+    expect(status).toBe(413)
+    expect(body.error).toContain(`${MAX_BODY_BYTES}`)
+  })
+
+  test("a streamed body is cut off at the limit with 413", async () => {
+    let sent = 0
+    const chunk = new TextEncoder().encode("0".repeat(64 * 1024))
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Endless unless the reader stops: the server must stop reading.
+        sent += chunk.length
+        controller.enqueue(chunk)
+        if (sent > 64 * MAX_BODY_BYTES) controller.close()
+      },
+    })
+    const { status } = await call("/api/decode", { method: "POST", headers: { "content-type": "text/plain" }, body: stream })
+    expect(status).toBe(413)
+    expect(sent).toBeLessThan(2 * MAX_BODY_BYTES)
+  })
+
+  test("a body at the limit's scale is read: the largest calldata the node takes fits", async () => {
+    const data = encodeExecute([
+      createOp({ minLifetime: 10n, attributes: [bytesCell("a", new Uint8Array(128 * 1024))] }),
+      createOp({ minLifetime: 10n, attributes: [bytesCell("b", new Uint8Array(128 * 1024))] }),
+      createOp({ minLifetime: 10n, attributes: [bytesCell("c", new Uint8Array(120 * 1024))] }),
+    ])
+    const payload = JSON.stringify({ data, chainId: 7706815 })
+    expect(payload.length).toBeLessThan(MAX_BODY_BYTES)
+    const { status, body } = await call("/api/decode", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    })
+    expect(status).toBe(200)
+    expect(body.operations).toHaveLength(3)
+  })
+
+  test("an internal error is a 500, never a 400 a caller would read as not-Arkiv", async () => {
+    const spy = spyOn(decoder, "decodeArkivTransaction").mockImplementation(() => {
+      throw new TypeError("a bug, not the input's fault")
+    })
+    const errors = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const { status, body } = await call("/api/decode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: encodeExecute([deleteOp(ENTITY_KEY)]) }),
+      })
+      expect(status).toBe(500)
+      expect(body.error).toBe("Internal server error")
+    } finally {
+      spy.mockRestore()
+      errors.mockRestore()
+    }
   })
 
   test("unsupported method on /api/decode returns 405", async () => {

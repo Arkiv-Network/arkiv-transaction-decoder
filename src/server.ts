@@ -1,5 +1,13 @@
-import { DecodeError, decodeArkivTransaction } from "./decoder"
+import { DecodeError, MAX_INPUT_BYTES, decodeArkivTransaction } from "./decoder"
 import { SERVICE_NAME, SERVICE_VERSION } from "./version"
+
+/**
+ * The largest request body read. The largest input the node accepts is MAX_INPUT_BYTES, which is
+ * twice that in hex; this leaves room for the JSON around it and refuses anything far beyond.
+ */
+export const MAX_BODY_BYTES = 1024 * 1024
+
+class BodyTooLarge extends Error {}
 
 const USAGE = {
   service: SERVICE_NAME,
@@ -12,6 +20,7 @@ const USAGE = {
     "GET /api/decode?data=0x...": "same as POST, via query parameter",
   },
   note: "the /api prefix is optional: /decode is the same route as /api/decode",
+  limits: `input at most ${MAX_INPUT_BYTES} bytes (the node's transaction cap), request body at most ${MAX_BODY_BYTES} bytes`,
 }
 
 function json(body: unknown, status = 200): Response {
@@ -21,12 +30,37 @@ function json(body: unknown, status = 200): Response {
   })
 }
 
+/**
+ * Reads the body, but no more than MAX_BODY_BYTES of it: a declared length beyond that is refused
+ * unread, and a body that turns out longer is cut off as soon as it does. Bun.serve enforces the
+ * same limit; this keeps handleRequest bounded whoever calls it.
+ */
+async function readBody(req: Request): Promise<string> {
+  const declared = Number(req.headers.get("content-length"))
+  if (declared > MAX_BODY_BYTES) throw new BodyTooLarge()
+  if (!req.body) return ""
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel()
+      throw new BodyTooLarge()
+    }
+    chunks.push(value)
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
 async function extractData(req: Request, url: URL): Promise<string | null> {
   if (req.method === "GET") {
     return url.searchParams.get("data")
   }
   const contentType = req.headers.get("content-type") ?? ""
-  const body = await req.text()
+  const body = await readBody(req)
   if (!body) return null
   if (contentType.includes("application/json")) {
     let parsed: unknown
@@ -78,6 +112,9 @@ export async function handleRequest(req: Request): Promise<Response> {
       if (e instanceof DecodeError) {
         return json({ error: e.message }, 400)
       }
+      if (e instanceof BodyTooLarge) {
+        return json({ error: `Request body is larger than ${MAX_BODY_BYTES} bytes` }, 413)
+      }
       console.error("Unexpected error while decoding:", e)
       return json({ error: "Internal server error" }, 500)
     }
@@ -88,6 +125,6 @@ export async function handleRequest(req: Request): Promise<Response> {
 
 if (import.meta.main) {
   const port = Number(process.env.PORT ?? 3000)
-  const server = Bun.serve({ port, fetch: handleRequest })
+  const server = Bun.serve({ port, fetch: handleRequest, maxRequestBodySize: MAX_BODY_BYTES })
   console.log(`arkiv-transaction-decoder listening on http://localhost:${server.port}`)
 }
