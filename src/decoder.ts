@@ -80,6 +80,8 @@ export const MAX_ATTRIBUTES = 32
 export const MAX_STR_BYTES = 128
 /** The longest single `bytes` value. */
 export const MAX_BYTES_LENGTH = 128 * 1024
+/** The most bytes the `bytes` values of one create or patch may hold together. */
+export const MAX_ENTITY_BYTES = 128 * 1024
 
 export type AttributeType =
   | "bool"
@@ -183,6 +185,8 @@ export type DecodedOperation = {
   bytesSize: number
   /** create: the attributes; patch: the mutations, tombstones included; otherwise empty */
   attributes: DecodedAttribute[]
+  /** present only when the node would refuse the operation as a whole: why */
+  error?: string
 }
 
 export type DecodedTransaction = {
@@ -319,12 +323,56 @@ function hexByte(n: number): `0x${string}` {
   return `0x${n.toString(16).padStart(2, "0")}`
 }
 
-/** An Ident32 name: left-aligned, NUL-padded UTF-8. */
-function decodeName(name: Uint8Array): { name: string; error?: string } {
+/** Byte-wise comparison, the order the node requires triple names in. */
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i]! - b[i]!
+  }
+  return a.length - b.length
+}
+
+/** The attribute-name grammar: a letter, then letters, digits, `.`, `-` or `_`, 32 bytes at most. */
+const NAME_GRAMMAR = /^[A-Za-z][A-Za-z0-9._-]{0,31}$/
+
+/** Words of the query language, refused as names whatever their case. */
+const RESERVED_NAMES = new Set([
+  "and",
+  "or",
+  "not",
+  "true",
+  "false",
+  "startswith",
+  "exists",
+  "typeof",
+  "bool",
+  "i32",
+  "u64",
+  "u256",
+  "dec",
+  "bytes32",
+  "bytes",
+  "str",
+  "addr",
+  "key",
+])
+
+/**
+ * An Ident32 name: left-aligned, NUL-padded UTF-8. Says why the node would refuse it, split the way
+ * the node checks: `error` for what `decode_protocol_triples` refuses (the encoding and the
+ * grammar), `policyError` for what `validate` refuses later (a `--`, a reserved word).
+ */
+function decodeName(name: Uint8Array): { name: string; error?: string; policyError?: string } {
   let end = name.indexOf(0)
   if (end === -1) end = name.length
   const text = name.subarray(end).every((b) => b === 0) ? decodeUtf8(name.subarray(0, end)) : undefined
   if (text === undefined) return { name: toHex(name), error: "the name is not NUL-padded UTF-8" }
+  if (!NAME_GRAMMAR.test(text)) {
+    return { name: text, error: "the name is not a letter followed by letters, digits, '.', '-' or '_'" }
+  }
+  if (text.includes("--")) return { name: text, policyError: "the name contains '--', which opens a query comment" }
+  if (RESERVED_NAMES.has(text.toLowerCase())) {
+    return { name: text, policyError: "the name is a reserved word of the query language" }
+  }
   return { name: text }
 }
 
@@ -388,10 +436,12 @@ function decodeValue(type: Exclude<AttributeType, "bytes">, value: Uint8Array): 
 
 /**
  * Decodes one attribute triple. Never throws: a triple the node would refuse comes back with an
- * `error`, so the rest of the transaction still reads. A `bytes` value is reduced to its size and keccak256 here, and its content goes no further.
+ * `error`, so the rest of the transaction still reads. The checks follow the node's
+ * `decode_protocol_triples` and `validate_user_cell`, and the first that fails is the one reported.
+ * A `bytes` value is reduced to its size and keccak256 here, and its content goes no further.
  */
-function decodeAttribute(cell: RawAttribute, inPatch: boolean): DecodedAttribute {
-  const { name, error: nameError } = decodeName(cell.name)
+function decodeAttribute(cell: RawAttribute, inPatch: boolean, previous: Uint8Array | undefined): DecodedAttribute {
+  const { name, error: nameError, policyError } = decodeName(cell.name)
   const typeId = cell.typeId
   const indexed = (typeId & INDEXED_FLAG) !== 0
   const size = cell.value.length
@@ -418,14 +468,17 @@ function decodeAttribute(cell: RawAttribute, inPatch: boolean): DecodedAttribute
     valueError = decoded.error
   }
 
-  // A malformed name outranks whatever else is wrong: the cell cannot even be named.
-  const error = nameError ?? valueError
+  const orderError =
+    previous !== undefined && compareBytes(previous, cell.name) >= 0
+      ? "names must be unique and in ascending byte order"
+      : undefined
+  const error = orderError ?? nameError ?? valueError ?? policyError
   if (error !== undefined) attribute.error = error
   return attribute
 }
 
 function decodeAttributes(cells: RawAttribute[], inPatch: boolean) {
-  const attributes = cells.map((cell) => decodeAttribute(cell, inPatch))
+  const attributes = cells.map((cell, i) => decodeAttribute(cell, inPatch, cells[i - 1]?.name))
   const bytesSize = attributes.reduce((total, a) => (a.type === "bytes" ? total + a.size : total), 0)
   return { attributes, bytesSize }
 }
@@ -481,6 +534,7 @@ function decodeOperation({ tag, data }: RawOperation): DecodedOperation {
         ...expiryFields(expiresAt, minLifetime),
         ...decodeAttributes(cells, false),
       }
+      if (creationFlags & ~3) decoded.error = "creationFlags sets bits other than readonly (1) and permissionless extension (2)"
       break
     }
     case OperationType.Patch: {
@@ -520,6 +574,9 @@ function decodeOperation({ tag, data }: RawOperation): DecodedOperation {
     }
   }
 
+  if (decoded.error === undefined && decoded.bytesSize > MAX_ENTITY_BYTES) {
+    decoded.error = `the bytes values together hold more than the ${MAX_ENTITY_BYTES} bytes an entity may`
+  }
   return decoded
 }
 

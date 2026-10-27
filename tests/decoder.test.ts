@@ -368,6 +368,78 @@ describe("malformed triples", () => {
   })
 })
 
+describe("node policy", () => {
+  // What the node's decode_protocol_triples and validate refuse, decided from calldata alone. The
+  // node never mines such a transaction; the decoder says why rather than failing the batch.
+  test("flags names the node refuses, keeping a value that decodes", () => {
+    const names = ["", "$owner", "1abc", "STR", "a b", "a--b", "str"]
+    const op = decodeOne(createOp({ attributes: sorted(names.map((n) => strCell(n, "x"))) }))
+    expect(op.attributes.map((a) => [a.name, a.value, a.error])).toEqual([
+      ["", "x", "the name is not a letter followed by letters, digits, '.', '-' or '_'"],
+      ["$owner", "x", "the name is not a letter followed by letters, digits, '.', '-' or '_'"],
+      ["1abc", "x", "the name is not a letter followed by letters, digits, '.', '-' or '_'"],
+      ["STR", "x", "the name is a reserved word of the query language"],
+      ["a b", "x", "the name is not a letter followed by letters, digits, '.', '-' or '_'"],
+      ["a--b", "x", "the name contains '--', which opens a query comment"],
+      ["str", "x", "the name is a reserved word of the query language"],
+    ])
+  })
+
+  test("accepts every name the grammar allows, up to 32 bytes", () => {
+    const names = ["A", "a.b", "a-b", "a_b", "a9", "n".repeat(32)]
+    const op = decodeOne(createOp({ attributes: sorted(names.map((n) => strCell(n, "x"))) }))
+    expect(op.attributes.every((a) => a.error === undefined)).toBe(true)
+  })
+
+  test("flags names out of ascending byte order, and duplicates", () => {
+    const op = decodeOne(
+      createOp({ attributes: [strCell("b", "1"), strCell("a", "2"), strCell("c", "3"), strCell("c", "4")] }),
+    )
+    expect(op.attributes.map((a) => [a.name, a.value, a.error])).toEqual([
+      ["b", "1", undefined],
+      ["a", "2", "names must be unique and in ascending byte order"],
+      ["c", "3", undefined],
+      ["c", "4", "names must be unique and in ascending byte order"],
+    ])
+  })
+
+  test("an order error outranks a value error, as the node checks order first", () => {
+    const op = decodeOne(createOp({ attributes: [strCell("b", "1"), cell("a", AttributeTypeId.Bool, toHex(2n, { size: 32 }))] }))
+    expect(op.attributes[1]!.error).toBe("names must be unique and in ascending byte order")
+  })
+
+  test("flags creation flags beyond readonly and permissionless extension", () => {
+    expect(decodeOne(createOp({ creationFlags: 3 })).error).toBeUndefined()
+    const op = decodeOne(createOp({ creationFlags: 0xff }))
+    expect(op.creationFlags).toBe(0xff)
+    expect(op.error).toBe("creationFlags sets bits other than readonly (1) and permissionless extension (2)")
+  })
+
+  test("flags an operation whose bytes values hold more than an entity may", () => {
+    const op = decodeOne(
+      createOp({ attributes: [bytesCell("a", new Uint8Array(70 * 1024)), bytesCell("b", new Uint8Array(70 * 1024))] }),
+    )
+    expect(op.bytesSize).toBe(140 * 1024)
+    expect(op.attributes.every((a) => a.error === undefined)).toBe(true)
+    expect(op.error).toBe("the bytes values together hold more than the 131072 bytes an entity may")
+    const patch = decodeOne(
+      patchOp({ entityKey: ENTITY_KEY, mutations: [bytesCell("a", new Uint8Array(129 * 1024))] }),
+    )
+    expect(patch.error).toBeString()
+  })
+
+  test("a well-formed operation has no error key at all", () => {
+    const op = decodeOne(createOp({ minLifetime: 1n, attributes: [strCell("a", "x")] }))
+    expect("error" in op).toBe(false)
+    expect("error" in op.attributes[0]!).toBe(false)
+  })
+
+  test("flags a tombstone whose name the node refuses", () => {
+    const op = decodeOne(patchOp({ entityKey: ENTITY_KEY, mutations: [tombstoneCell("exists")] }))
+    expect(op.attributes[0]).toMatchObject({ type: "tombstone", error: "the name is a reserved word of the query language" })
+  })
+})
+
 describe("patch", () => {
   test("lists its mutations: sets with their new type and flag, tombstones that unset", () => {
     const op = decodeOne(
