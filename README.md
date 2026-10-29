@@ -237,9 +237,9 @@ what is wrong. A triple's `error` is the first of these that applies, in the ord
    followed by letters, digits, `.`, `-` or `_`;
 3. its typeId or value: an `invalid(0x..)` typeId, a word value that is not 32 bytes or out of
    range for its type (a `bool` other than 0 or 1, an `i32` that is not sign-extended, a `u64` or
-   `addr` with high bits set), a `str` that is not UTF-8, longer than 128 bytes or holding a C0
-   control character or DEL, a `bytes` value over 128 KiB, a tombstone in a create, or a tombstone
-   with a value;
+   `addr` with high bits set), a `str` that is not UTF-8 or is longer than 128 bytes (control
+   characters, NUL and DEL included, are UTF-8 like any other), a `bytes` value over 128 KiB, a
+   tombstone in a create, or a tombstone with a value;
 4. its name contains `--` or is a reserved word of the query language (`and`, `or`, `not`, `true`,
    `false`, `startswith`, `exists`, `typeof` and the ten type tags), in any case.
 
