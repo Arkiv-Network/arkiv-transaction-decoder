@@ -385,8 +385,6 @@ function formatDecimal(units: bigint): string {
   return fraction ? `${sign}${whole}.${fraction}` : `${sign}${whole}`
 }
 
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/
-
 type ValueResult = { value: AttributeValue; error?: string }
 
 function invalid(error: string): ValueResult {
@@ -402,7 +400,6 @@ function decodeValue(type: Exclude<AttributeType, "bytes">, value: Uint8Array): 
     if (value.length > MAX_STR_BYTES) return invalid(`a str value is longer than ${MAX_STR_BYTES} bytes`)
     const text = decodeUtf8(value)
     if (text === undefined) return invalid("a str value must be valid UTF-8")
-    if (CONTROL_CHARACTER.test(text)) return invalid("a str value must not contain control characters")
     return { value: text }
   }
 

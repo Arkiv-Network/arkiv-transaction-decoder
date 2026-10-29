@@ -301,9 +301,7 @@ describe("malformed triples", () => {
           cell("a05long", AttributeTypeId.Key, toHex(1n, { size: 33 })),
           cell("a06utf8", AttributeTypeId.Str, "0xff00"),
           cell("a07toolong", AttributeTypeId.Str, toHex(toBytes("x".repeat(129)))),
-          cell("a08control", AttributeTypeId.Str, toHex(toBytes("tab\there"))),
-          cell("a09del", AttributeTypeId.Str, toHex(toBytes("del\u007f"))),
-          tombstoneCell("a10tombstone"),
+          tombstoneCell("a08tombstone"),
         ],
       }),
     )
@@ -316,8 +314,6 @@ describe("malformed triples", () => {
       [null, "a key value must be 32 bytes"],
       [null, "a str value must be valid UTF-8"],
       [null, "a str value is longer than 128 bytes"],
-      [null, "a str value must not contain control characters"],
-      [null, "a str value must not contain control characters"],
       // A tombstone in a create is no mutation at all.
       [null, "a tombstone (typeId 0) is legal only in a patch"],
     ])
@@ -330,11 +326,19 @@ describe("malformed triples", () => {
       "key",
       "str",
       "str",
-      "str",
-      "str",
       "tombstone",
     ])
-    expect(attributes.map((a) => a.size)).toEqual([32, 32, 32, 32, 31, 33, 2, 129, 8, 4, 0])
+    expect(attributes.map((a) => a.size)).toEqual([32, 32, 32, 32, 31, 33, 2, 129, 0])
+  })
+
+  test("a str is any UTF-8 up to 128 bytes, control characters included", () => {
+    // The node's decode_value checks only length and UTF-8: rabdi mined
+    // "line one\n\tline two" (block 4281, tx 0x21b493f2…c118).
+    const values = ["line one\n\tline two", "nul\u0000inside", "del\u007f", "\r\n\u001b[0m"]
+    const attributes = attributesOf(
+      createOp({ attributes: values.map((v, i) => cell(`s${i}`, AttributeTypeId.Str, toHex(toBytes(v)))) }),
+    )
+    expect(attributes.map((a) => [a.value, a.error])).toEqual(values.map((v) => [v, undefined]))
   })
 
   test("an oversized bytes value is flagged and still never shown", () => {
