@@ -48,15 +48,15 @@ bun start          # listens on :3000, override with PORT=...
 ## Docker
 
 ```sh
-docker build -t arkiv-transaction-decoder:v0.3.0 .
-docker run --rm -p 3000:3000 arkiv-transaction-decoder:v0.3.0
+docker build -t arkiv-transaction-decoder:v0.3.1 .
+docker run --rm -p 3000:3000 arkiv-transaction-decoder:v0.3.1
 ```
 
-Pushing a Git tag such as `v0.3.0` builds and publishes the image to GitHub Container Registry:
+Pushing a Git tag such as `v0.3.1` builds and publishes the image to GitHub Container Registry:
 
 ```sh
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 ## API
@@ -72,7 +72,7 @@ Returns the service name and the version in `package.json`:
 ```json
 {
   "service": "arkiv-transaction-decoder",
-  "version": "v0.3.0"
+  "version": "v0.3.1"
 }
 ```
 
