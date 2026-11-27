@@ -7,6 +7,12 @@ RUN bun install --frozen-lockfile --production
 FROM oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
 WORKDIR /app
 
+# Take Alpine's security fixes the pinned base image predates (e.g. OpenSSL). A build with a
+# shared layer cache passes a BUILD_DATE that changes every publish, so the cache never keeps an
+# old package set.
+ARG BUILD_DATE=unknown
+RUN apk upgrade --no-cache
+
 # The port the server binds. 3000 is the standalone default; a build that ships this decoder into
 # a deployment whose probes and callers already name a port bakes that port in instead, because
 # nothing there supplies PORT in the container's environment.
